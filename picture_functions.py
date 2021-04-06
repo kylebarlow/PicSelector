@@ -126,25 +126,44 @@ def process_image(fpath, fdata, max_thumbnail_width=400):
 
 
 class DirectoryMonitor():
-    def __init__(self, root_dir, add_existing_files=True, max_file_queue_size=100, num_processing_threads=2, processing_niceness=10):
+    def __init__(self, root_dir, add_existing_files=True, monitor_new=True, max_file_queue_size=100, num_processing_threads=2, processing_niceness=10):
         assert(os.path.isdir(root_dir))
         self.root_dir = root_dir
         self.add_existing_files = add_existing_files
         self.queue = multiprocessing.Queue(maxsize=max_file_queue_size)
         self.watchdog_queue = multiprocessing.Queue()
-        self.initialize_watchdog()
+        self.num_processing_threads = num_processing_threads
+        if monitor_new:
+            self.initialize_watchdog()
+            self.queue_combiner = multiprocessing.Process(target=combine_queues, args=(self.queue, self.watchdog_queue))
+            self.queue_combiner.start()
+        else:
+            assert(add_existing_files)
 
-        self.queue_combiner = multiprocessing.Process(target=combine_queues, args=(self.queue, self.watchdog_queue))
-        self.queue_combiner.start()
         if self.add_existing_files:
             self.initial_walker = multiprocessing.Process(target=walk_dir, args=(self.root_dir, self.queue))
             self.initial_walker.start()
 
         self.media_process_pool = multiprocessing.Pool(
-            processes=num_processing_threads,
+            processes=self.num_processing_threads,
             initializer=media_processor_worker,
             initargs=(self.queue, processing_niceness)
         )
+
+        if not monitor_new:
+            self.exit_when_initial_processing_done()
+
+    def exit_when_initial_processing_done(self):
+        self.initial_walker.join()
+        number_times_queue_0 = 0
+        while number_times_queue_0 < 5:
+            time.sleep(0.4)
+            if self.queue.qsize() == 0:
+                number_times_queue_0 += 1
+        for i in range(self.num_processing_threads):
+            self.queue.put(None)
+        self.media_process_pool.close()
+        self.media_process_pool.join()
 
     def initialize_watchdog(self):
         self.event_handler = FileWatchdog(self.watchdog_queue)
@@ -167,10 +186,13 @@ class FileWatchdog(watchdog.events.PatternMatchingEventHandler):
         self.process(event)
         # return super().process(event)
 
+
 def media_processor_worker(q, niceness):
     os.nice(niceness)
     while True:
         event = q.get()
+        if event is None:
+            break
         process_media_file(event)
 
 
@@ -180,7 +202,6 @@ def combine_queues(main_queue, secondary_queue):
 
 
 def walk_dir(root_dir, queue):
-    found_files = {'images': [], 'videos': []}
     assert(os.path.isdir(root_dir))
     for dirpath, dirnames, filenames in os.walk(root_dir):
         for fpath in [os.path.join(dirpath, filename) for filename in filenames]:
@@ -199,10 +220,12 @@ def path_is_image_or_video(fpath):
 
 
 if __name__ == '__main__':
-    dm = DirectoryMonitor(sys.argv[1])
-    try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        dm.observer.stop()
-    dm.observer.join()
+    monitor_new = False
+    dm = DirectoryMonitor(sys.argv[1], monitor_new=monitor_new)
+    if monitor_new:
+        try:
+            while True:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            dm.observer.stop()
+        dm.observer.join()
