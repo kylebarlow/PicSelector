@@ -11,8 +11,9 @@ import watchdog
 import watchdog.events
 import watchdog.observers
 import PIL
-import PIL.ExifTags
+from PIL.ExifTags import TAGS, GPSTAGS
 import imagehash
+# import face_recognition
 
 
 def process_media_file(event):
@@ -24,38 +25,103 @@ def process_media_file(event):
         process_image(fpath, fdata)
 
 
-def process_image(fpath, fdata):
+def get_decimal_from_dms(dms, ref):
+    try:
+        degrees = dms[0][0] / dms[0][1]
+        minutes = dms[1][0] / dms[1][1] / 60.0
+        seconds = dms[2][0] / dms[2][1] / 3600.0
+    except TypeError:
+        degrees = dms[0]
+        minutes = dms[1] / 60.0
+        seconds = dms[2] / 3600.0
+
+    if ref in ['S', 'W']:
+        degrees = -degrees
+        minutes = -minutes
+        seconds = -seconds
+
+    return degrees + minutes + seconds
+
+
+def process_image(fpath, fdata, max_thumbnail_width=400):
     sha_hash = hashlib.sha256(fdata).hexdigest()
     image = PIL.Image.open(io.BytesIO(fdata))
     hashes = {}
     hashes['average'] = str(imagehash.average_hash(image))
     hashes['perceptual'] = str(imagehash.phash(image))
     hashes['difference'] = str(imagehash.dhash(image))
-    # hashes['wavelet'] = str(imagehash.whash(image))
-    # hashes['color'] = str(imagehash.colorhash(image))
-    # hashes['crop_resistant'] = str(imagehash.crop_resistant_hash(image))
     # TODO
     # face recognition
     # GPS
-    # thumbnail
+
     exif_data = image.getexif()
     exif_dict = {}
     for tag_id, data in exif_data.items():
         # get the tag name, instead of human unreadable tag id
         tag = PIL.ExifTags.TAGS.get(tag_id, tag_id)
+        if tag == 'GPSInfo':
+            continue
         if isinstance(data, bytes):
             data = data.decode()
         exif_dict[tag] = data
-    date_time = [value for key, value in exif_dict.items() if key.startswith('DateTime')]
-    assert( len(date_time) <= 1 )
+
+    # This seems dumb, but image._getexif() returns different information than image.getexif()
+    raw_exif_data = {}
+    if image._getexif() is not None:
+        for tag, value in image._getexif().items():
+            try:
+                raw_exif_data[TAGS.get(tag, tag)] = value
+            except Exception:
+                pass
+
+    geotags = {}
+    if 'GPSInfo' in raw_exif_data:
+        for tag, value in raw_exif_data['GPSInfo'].items():
+            try:
+                geotags[GPSTAGS.get(tag, tag)] = value
+            except Exception:
+                pass
+
+    lat = None
+    lon = None
+    try:
+        lat = get_decimal_from_dms(geotags['GPSLatitude'], geotags['GPSLatitudeRef'])
+    except KeyError:
+        pass
+    try:
+        lon = get_decimal_from_dms(geotags['GPSLongitude'], geotags['GPSLongitudeRef'])    
+    except KeyError:
+        pass
+    if lat == 0 and lon == 0:
+        lat = None
+        lon = None
+
+    date_time = set([value for key, value in exif_dict.items() if key.startswith('DateTime')])
+    assert(len(date_time) <= 1)
     if len(date_time) == 0:
         date_time = None
     else:
-        date_time = datetime.datetime.strptime(date_time[0], '%Y:%m:%d %H:%M:%S')
+        date_time = datetime.datetime.strptime(list(date_time)[0], '%Y:%m:%d %H:%M:%S')
+
+    max_size = (max_thumbnail_width, min(max_thumbnail_width*3, image.height))
+    thumbnail = image.copy().thumbnail(max_size)
+
+    # fr_image = face_recognition.load_image_file(io.BytesIO(fdata))
+    # face_locations = face_recognition.face_locations(fr_image)
+    # face_encodings = face_recognition.face_encodings(fr_image, num_jitters=3)
+    
     print(fpath, sha_hash, date_time)
+    # print(face_locations)
+    # print(face_encodings)
     print(hashes)
     print(image.width, image.height, image.mode, image.format)
     print(exif_dict)
+    print(lat, lon)
+    if len(geotags) > 0:
+        print(geotags)
+    # metadata = pyexiv2.ImageMetadata(fdata)
+    # metadata.read()
+    # print(metadata.exif_keys)
     print()
 
 
