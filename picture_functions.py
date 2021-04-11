@@ -5,6 +5,7 @@ import io
 import time
 import hashlib
 import multiprocessing
+from pprint import pprint
 
 import filetype
 import watchdog
@@ -14,15 +15,96 @@ import PIL
 from PIL.ExifTags import TAGS, GPSTAGS
 import imagehash
 # import face_recognition
+from dateutil import parser as dateutil_parser
+import ffmpeg
 
 
 def process_media_file(event):
     fpath = event.src_path
-    with open(fpath, 'rb') as f:
-        fdata = f.read()
 
-    if filetype.helpers.is_image(fdata):
-        process_image(fpath, fdata)
+    if filetype.helpers.is_image(fpath):
+        # with open(fpath, 'rb') as f:
+        #     fdata = f.read()
+        # process_image(fpath, fdata)
+        pass
+    elif filetype.helpers.is_video(fpath):
+        pprint(process_video(fpath))
+
+
+def process_video(fpath):
+    info = find_probe_info(ffmpeg.probe(fpath), desired_keys=['duration', 'location', 'creation_time', 'height', 'width'])
+    # pprint(ffmpeg.probe(fpath))
+
+    with open(fpath, "rb") as f:
+        file_hash = hashlib.sha256()
+        while chunk := f.read(64*16):
+            file_hash.update(chunk)
+    sha_hash = file_hash.hexdigest()
+
+    date_time = None
+    if 'creation_time' in info:
+        date_time = dateutil_parser.parse((info['creation_time'][0]))
+
+    duration = None
+    if 'duration' in info:
+        duration = float(info['duration'][0])
+
+    height = None
+    if 'height' in info:
+        height = int(info['height'][0])
+
+    width = None
+    if 'width' in info:
+        width = int(info['width'][0])
+
+    lat = None
+    lon = None
+    if 'location' in info:
+        try:
+            loc_str = info['location'][0]
+            if loc_str.endswith('/'):
+                loc_str = loc_str[:-1]
+            if loc_str[0] == '+' and '-' in loc_str:
+                lat = float(loc_str.split('-')[0][1:])
+                lon = float(loc_str.split('-')[1])
+        except Exception:
+            pass
+
+    filesize = os.path.getsize(fpath)
+
+    return {
+        'lat': lat,
+        'lon': lon,
+        'height': height,
+        'width': width,
+        'size': filesize,
+        'sha256_hash': sha_hash,
+        'creation_time': date_time,
+        'video_length': duration,
+        'media_type' : 'video',
+    }
+
+
+def find_probe_info(d, desired_keys=[]):
+    found_info = {desired_key: [] for desired_key in desired_keys}
+    for k, v in d.items():
+        if isinstance(v, dict):
+            for desired_key, l in find_probe_info(v, desired_keys=desired_keys).items():
+                found_info[desired_key].extend(l)
+        elif isinstance(v, list):
+            for x in v:
+                if isinstance(x, dict):
+                    for desired_key, l in find_probe_info(x, desired_keys=desired_keys).items():
+                        found_info[desired_key].extend(l)
+        else:
+            for desired_key in desired_keys:
+                if k.startswith(desired_key):
+                    found_info[desired_key].append(v)
+
+    # Remove duplicates by converting to set
+    found_info = {k: set(v) for k, v in found_info.items() if len(v) > 0}
+    found_info = {k: list(v) for k, v in found_info.items()}
+    return found_info
 
 
 def get_decimal_from_dms(dms, ref):
@@ -50,9 +132,6 @@ def process_image(fpath, fdata, max_thumbnail_width=400):
     hashes['average'] = str(imagehash.average_hash(image))
     hashes['perceptual'] = str(imagehash.phash(image))
     hashes['difference'] = str(imagehash.dhash(image))
-    # TODO
-    # face recognition
-    # GPS
 
     exif_data = image.getexif()
     exif_dict = {}
@@ -102,6 +181,31 @@ def process_image(fpath, fdata, max_thumbnail_width=400):
         date_time = None
     else:
         date_time = datetime.datetime.strptime(list(date_time)[0], '%Y:%m:%d %H:%M:%S')
+
+    if date_time is None and 'GPSDateStamp' in geotags and 'GPSTimeStamp' in geotags:
+        try:
+            year, month, day = geotags['GPSDateStamp'].split(':')
+            date_time = datetime.datetime(year=year, month=month, day=day, hour=geotags['GPSTimeStamp'][0], minute=geotags['GPSTimeStamp'][1], second=geotags['GPSTimeStamp'][2])
+        except Exception:
+            pass
+    if date_time is None and 'GPSDateStamp' in geotags:
+        try:
+            year, month, day = geotags['GPSDateStamp'].split(':')
+            date_time = datetime.datetime(year=year, month=month, day=day)
+        except Exception:
+            pass
+    if date_time is None:
+        try:
+            extension_length = len(fpath.split('.')[-1]) + 1
+            date_time = datetime.datetime.strptime(os.path.basename(fpath)[:-extension_length], "%Y-%m-%d %H.%M.%S")
+        except Exception:
+            pass
+    if date_time is None:
+        try:
+            extension_length = len(fpath.split('.')[-1]) + 1
+            date_time = dateutil_parser.parse(os.path.basename(fpath)[:-extension_length])
+        except Exception:
+            pass
 
     max_size = (max_thumbnail_width, min(max_thumbnail_width*3, image.height))
     thumbnail = image.copy().thumbnail(max_size)
