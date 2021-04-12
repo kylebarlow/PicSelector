@@ -6,6 +6,7 @@ import time
 import hashlib
 import multiprocessing
 from pprint import pprint
+import tempfile
 
 import filetype
 import watchdog
@@ -17,18 +18,27 @@ import imagehash
 # import face_recognition
 from dateutil import parser as dateutil_parser
 import ffmpeg
+import pandas as pd
+
+# import boto3
+# # Session can be global and shared between processes/threads
+# session = boto3.session.Session()
+# client = session.client("s3")
+
+from sshtunnel import SSHTunnelForwarder
+import psycopg2
+import config
 
 
 def process_media_file(event):
     fpath = event.src_path
 
     if filetype.helpers.is_image(fpath):
-        # with open(fpath, 'rb') as f:
-        #     fdata = f.read()
-        # process_image(fpath, fdata)
-        pass
+        metadata = process_image(fpath)
     elif filetype.helpers.is_video(fpath):
-        pprint(process_video(fpath))
+        metadata = process_video(fpath)
+    metadata['fpath'] = fpath
+    return metadata
 
 
 def process_video(fpath):
@@ -39,7 +49,7 @@ def process_video(fpath):
         file_hash = hashlib.sha256()
         while chunk := f.read(64*16):
             file_hash.update(chunk)
-    sha_hash = file_hash.hexdigest()
+    sha_hash = file_hash.digest()
 
     date_time = None
     if 'creation_time' in info:
@@ -80,8 +90,10 @@ def process_video(fpath):
         'size': filesize,
         'sha256_hash': sha_hash,
         'creation_time': date_time,
-        'video_length': duration,
-        'media_type' : 'video',
+        'media_type': 'video',
+        'video_only': {
+            'duration': duration,
+        }
     }
 
 
@@ -125,8 +137,10 @@ def get_decimal_from_dms(dms, ref):
     return degrees + minutes + seconds
 
 
-def process_image(fpath, fdata, max_thumbnail_width=400):
-    sha_hash = hashlib.sha256(fdata).hexdigest()
+def process_image(fpath, max_thumbnail_width=400):
+    with open(fpath, 'rb') as f:
+        fdata = f.read()
+    sha_hash = hashlib.sha256(fdata).digest()
     image = PIL.Image.open(io.BytesIO(fdata))
     hashes = {}
     hashes['average'] = str(imagehash.average_hash(image))
@@ -208,34 +222,44 @@ def process_image(fpath, fdata, max_thumbnail_width=400):
             pass
 
     max_size = (max_thumbnail_width, min(max_thumbnail_width*3, image.height))
-    thumbnail = image.copy().thumbnail(max_size)
+    thumbnail = image.copy()
+    thumbnail.thumbnail(max_size)
+    with tempfile.NamedTemporaryFile('wb', suffix='.jpg', delete=False) as f:
+        thumbnail_path = os.path.abspath(f.name)
+        thumbnail.save(f, format='JPEG')
 
     # fr_image = face_recognition.load_image_file(io.BytesIO(fdata))
     # face_locations = face_recognition.face_locations(fr_image)
     # face_encodings = face_recognition.face_encodings(fr_image, num_jitters=3)
     
-    print(fpath, sha_hash, date_time)
-    # print(face_locations)
-    # print(face_encodings)
-    print(hashes)
-    print(image.width, image.height, image.mode, image.format)
-    print(exif_dict)
-    print(lat, lon)
-    if len(geotags) > 0:
-        print(geotags)
-    # metadata = pyexiv2.ImageMetadata(fdata)
-    # metadata.read()
-    # print(metadata.exif_keys)
-    print()
+    return {
+        'lat': lat,
+        'lon': lon,
+        'height': image.height,
+        'width': image.width,
+        'size': sys.getsizeof(fdata),
+        'sha256_hash': sha_hash,
+        'creation_time': date_time,
+        'media_type': 'image',
+        'image_only' : {
+            'thumbnail_path': thumbnail_path,
+            'thumbnail_width': thumbnail.width,
+            'thumbnail_height': thumbnail.size,
+            'thumbnail_size': os.path.getsize(thumbnail_path),
+            'hashes': hashes,
+        }
+    }
 
 
 class DirectoryMonitor():
-    def __init__(self, root_dir, add_existing_files=True, monitor_new=True, max_file_queue_size=100, num_processing_threads=2, processing_niceness=10):
+    def __init__(self, root_dir, add_existing_files=True, monitor_new=True, max_file_queue_size=100, num_processing_threads=2, processing_niceness=10, max_metadata_queue_size=5000, max_s3_queue_size=1000, num_s3_threads=2):
         assert(os.path.isdir(root_dir))
         self.root_dir = root_dir
         self.add_existing_files = add_existing_files
         self.queue = multiprocessing.Queue(maxsize=max_file_queue_size)
         self.watchdog_queue = multiprocessing.Queue()
+        self.metadata_queue = multiprocessing.Queue(maxsize=max_metadata_queue_size)
+        self.s3_queue = multiprocessing.Queue(maxsize=max_s3_queue_size)
         self.num_processing_threads = num_processing_threads
         if monitor_new:
             self.initialize_watchdog()
@@ -251,7 +275,17 @@ class DirectoryMonitor():
         self.media_process_pool = multiprocessing.Pool(
             processes=self.num_processing_threads,
             initializer=media_processor_worker,
-            initargs=(self.queue, processing_niceness)
+            initargs=(self.queue, self.metadata_queue, processing_niceness)
+        )
+
+        self.metadata_worker = multiprocessing.Process(target=metadata_processor_worker, args=(self.metadata_queue, self.s3_queue, self.root_dir))
+        self.metadata_worker.start()
+
+        self.num_s3_threads = num_s3_threads
+        self.s3_upload_pool = multiprocessing.Pool(
+            processes=self.num_s3_threads,
+            initializer=s3_upload_worker,
+            initargs=(self.s3_queue,)
         )
 
         if not monitor_new:
@@ -261,13 +295,23 @@ class DirectoryMonitor():
         self.initial_walker.join()
         number_times_queue_0 = 0
         while number_times_queue_0 < 5:
-            time.sleep(0.4)
+            time.sleep(0.2)
             if self.queue.qsize() == 0:
                 number_times_queue_0 += 1
+            else:
+                number_times_queue_0 = 0
         for i in range(self.num_processing_threads):
             self.queue.put(None)
         self.media_process_pool.close()
         self.media_process_pool.join()
+        time.sleep(0.4)
+        self.metadata_queue.put(None)
+        self.metadata_worker.join()
+        time.sleep(0.4)
+        for i in range(self.num_s3_threads):
+            self.s3_queue.put(None)
+        self.s3_upload_pool.close()
+        self.s3_upload_pool.join()
 
     def initialize_watchdog(self):
         self.event_handler = FileWatchdog(self.watchdog_queue)
@@ -291,13 +335,65 @@ class FileWatchdog(watchdog.events.PatternMatchingEventHandler):
         # return super().process(event)
 
 
-def media_processor_worker(q, niceness):
+def media_processor_worker(file_queue, metadata_queue, niceness):
     os.nice(niceness)
     while True:
-        event = q.get()
+        event = file_queue.get()
         if event is None:
             break
-        process_media_file(event)
+        metadata = process_media_file(event)
+        metadata_queue.put(metadata)
+
+
+def metadata_processor_worker(metadata_queue, s3_queue, root_dir, batch_size=50):
+    '''
+    Uploads to database in batches, and gives S3 uploaders work to do
+    '''
+    metadata_batch = []
+    while True:
+        metadata = metadata_queue.get()
+        if metadata is None or len(metadata_batch)+1 >= batch_size:
+            if metadata is not None:
+                metadata_batch.append(metadata)
+            if len(metadata_batch) > 0:
+                s3_upload_jobs = process_metadata_batch(metadata_batch, root_dir)
+                for s3_upload_job in s3_upload_jobs:
+                    s3_queue.put(s3_upload_job)
+                metadata_batch = []
+            if metadata is None:
+                break
+        else:
+            metadata_batch.append(metadata)
+        
+
+def process_metadata_batch(unfiltered_metadata_batch, root_dir):
+    s3_upload_jobs = []
+    with DatabaseConnector() as conn:
+        existing = pd.read_sql_query(
+            '''SELECT id, sha256_hash FROM media WHERE sha256_hash IN %s''', 
+            conn,
+            params=(tuple([psycopg2.Binary(d['sha256_hash']) for d in unfiltered_metadata_batch]),),
+        )
+        print('%d existing out of %d' % (len(existing), len(unfiltered_metadata_batch)) )
+
+        filtered_metadata_batch = unfiltered_metadata_batch
+
+        for metadata in filtered_metadata_batch:
+            if metadata['media_type'] == 'image':
+                media_type = 0
+            elif metadata['media_type'] == 'video':
+                media_type = 1
+            else:
+                raise Exception()
+
+    return s3_upload_jobs
+
+
+def s3_upload_worker(s3_queue):
+    while True:
+        data = s3_queue.get()
+        if data is None:
+            break
 
 
 def combine_queues(main_queue, secondary_queue):
@@ -321,6 +417,52 @@ def path_is_image_or_video(fpath):
         return True
     else:
         return False
+
+
+class DatabaseConnector():
+    '''
+    Allows psycopg2 both with or without SSH tunneling
+    '''
+    def __init__(self):
+        self.postgres_over_ssh = config.postgres_over_ssh
+        if self.postgres_over_ssh:
+            self.ssh_host = config.ssh_host
+            self.ssh_username = config.ssh_username
+            self.ssh_key = config.ssh_key_path
+            self.local_bind_port = None
+            self.postgres_host = '127.0.0.1'
+        else:
+            self.local_bind_port = 5432
+            self.postgres_host = config.postgres_host
+
+        self.database_name = config.database_name
+        self.postgres_user = config.postgres_user
+        self.postgres_pass = config.postgres_pass
+
+    def __enter__(self):
+        if self.postgres_over_ssh:
+            self.server = SSHTunnelForwarder(
+                self.ssh_host,
+                ssh_username=self.ssh_username,
+                ssh_pkey=self.ssh_key,
+                remote_bind_address=('127.0.0.1', 5432)
+            )
+            self.server.start()
+            self.local_bind_port = self.server.local_bind_port
+
+            self.conn = psycopg2.connect(
+                dbname=self.database_name,
+                user=self.postgres_user,
+                password=self.postgres_pass,
+                port=self.local_bind_port,
+                host=self.postgres_host,
+            )
+        return self.conn
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        self.conn.close()
+        if self.postgres_over_ssh:
+            self.server.stop()
 
 
 if __name__ == '__main__':
