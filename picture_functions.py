@@ -5,8 +5,8 @@ import io
 import time
 import hashlib
 import multiprocessing
-from pprint import pprint
 import tempfile
+from pprint import pprint
 
 import filetype
 import watchdog
@@ -18,6 +18,7 @@ import imagehash
 # import face_recognition
 from dateutil import parser as dateutil_parser
 import ffmpeg
+import numpy as np
 import pandas as pd
 
 # import boto3
@@ -41,7 +42,26 @@ def process_media_file(event):
     return metadata
 
 
-def process_video(fpath):
+def generate_thumbnail(in_filename, out_filename, time, width):
+    try:
+        (
+            ffmpeg
+            .input(in_filename, ss=time)
+            .filter('scale', width, -1)
+            .output(out_filename, vframes=1)
+            .overwrite_output()
+            .run(capture_stdout=True, capture_stderr=True)
+        )
+    except ffmpeg.Error as e:
+        print(e.stderr.decode(), file=sys.stderr)
+        raise
+
+
+def make_ss_time(time_in_s):
+    return str(datetime.timedelta(seconds=time_in_s))
+
+
+def process_video(fpath, max_thumbnail_width=400, max_thumbnail_samples=5000):
     info = find_probe_info(ffmpeg.probe(fpath), desired_keys=['duration', 'location', 'creation_time', 'height', 'width'])
     # pprint(ffmpeg.probe(fpath))
 
@@ -82,6 +102,54 @@ def process_video(fpath):
 
     filesize = os.path.getsize(fpath)
 
+    thumbnail_paths = []
+    if duration is not None:
+        if duration <= 10:
+            thumbnail_samples = range(0, max(int(duration), 1))
+        elif duration <= 60 or duration < max_thumbnail_samples:
+            thumbnail_samples = range(0, int(duration))
+        else:
+            thumbnail_samples = np.linspace(0, duration, num=max_thumbnail_samples).astype(int)
+
+        # print(fpath, duration)
+        for s in thumbnail_samples:
+            s = int(s)
+            ss = make_ss_time(s)
+            with tempfile.NamedTemporaryFile('wb', suffix='_vthumb.jpg', delete=False) as f:
+                thumbnail_path = os.path.abspath(f.name)
+            try:
+                generate_thumbnail(fpath, thumbnail_path, ss, max_thumbnail_width)
+                thumbnail_paths.append(thumbnail_path)
+            except Exception:
+                pass
+
+    best_thumbnail_path = None
+    if len(thumbnail_paths) > 0:
+        ahashes = []
+        for thumbnail_path in thumbnail_paths:
+            image = PIL.Image.open(thumbnail_path)
+            ahashes.append(imagehash.average_hash(image))
+        
+        distances = []
+        for i, ahash_i in enumerate(ahashes):
+            distances.append((np.mean([ahash_i-ahash_j for ahash_j in ahashes]), i))
+        distances.sort()
+        mean_i = distances[0][1]
+
+        best_thumbnail_path = thumbnail_paths[mean_i]
+        for i, thumbnail_path in enumerate(thumbnail_paths):
+            if i != mean_i:
+                os.remove(thumbnail_path)
+
+    thumbnail_width = None
+    thumbnail_height = None
+    thumbnail_size = None
+    if best_thumbnail_path is not None:
+        image = PIL.Image.open(best_thumbnail_path)
+        thumbnail_width = image.width
+        thumbnail_height = image.height
+        thumbnail_size = os.path.getsize(best_thumbnail_path)
+
     return {
         'lat': lat,
         'lon': lon,
@@ -91,6 +159,12 @@ def process_video(fpath):
         'sha256_hash': sha_hash,
         'creation_time': date_time,
         'media_type': 'video',
+        'thumbnail': {
+            'thumbnail_path': best_thumbnail_path,
+            'thumbnail_width': thumbnail_width,
+            'thumbnail_height': thumbnail_height,
+            'thumbnail_size': thumbnail_size,
+        },
         'video_only': {
             'duration': duration,
         }
@@ -110,7 +184,7 @@ def find_probe_info(d, desired_keys=[]):
                         found_info[desired_key].extend(l)
         else:
             for desired_key in desired_keys:
-                if k.startswith(desired_key):
+                if k == desired_key:
                     found_info[desired_key].append(v)
 
     # Remove duplicates by converting to set
@@ -224,7 +298,7 @@ def process_image(fpath, max_thumbnail_width=400):
     max_size = (max_thumbnail_width, min(max_thumbnail_width*3, image.height))
     thumbnail = image.copy()
     thumbnail.thumbnail(max_size)
-    with tempfile.NamedTemporaryFile('wb', suffix='.jpg', delete=False) as f:
+    with tempfile.NamedTemporaryFile('wb', suffix='_ithumb.jpg', delete=False) as f:
         thumbnail_path = os.path.abspath(f.name)
         thumbnail.save(f, format='JPEG')
 
@@ -241,11 +315,13 @@ def process_image(fpath, max_thumbnail_width=400):
         'sha256_hash': sha_hash,
         'creation_time': date_time,
         'media_type': 'image',
-        'image_only' : {
+        'thumbnail': {
             'thumbnail_path': thumbnail_path,
             'thumbnail_width': thumbnail.width,
-            'thumbnail_height': thumbnail.size,
+            'thumbnail_height': thumbnail.height,
             'thumbnail_size': os.path.getsize(thumbnail_path),
+        },
+        'image_only': {
             'hashes': hashes,
         }
     }
