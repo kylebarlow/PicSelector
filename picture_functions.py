@@ -216,9 +216,21 @@ def process_image(fpath, max_thumbnail_width=400):
     sha_hash = hashlib.sha256(fdata).digest()
     image = PIL.Image.open(io.BytesIO(fdata))
     hashes = {}
-    hashes['average'] = str(imagehash.average_hash(image))
-    hashes['perceptual'] = str(imagehash.phash(image))
-    hashes['difference'] = str(imagehash.dhash(image))
+    hashes['average'] = ' ' * 16
+    try:
+        hashes['average'] = str(imagehash.average_hash(image))
+    except Exception:
+        pass
+    hashes['perceptual'] = ' ' * 16
+    try:
+        hashes['perceptual'] = str(imagehash.phash(image))
+    except Exception:
+        pass
+    hashes['difference'] = ' ' * 16
+    try:
+        hashes['difference'] = str(imagehash.dhash(image))
+    except Exception:
+        pass
 
     exif_data = image.getexif()
     exif_dict = {}
@@ -227,9 +239,12 @@ def process_image(fpath, max_thumbnail_width=400):
         tag = PIL.ExifTags.TAGS.get(tag_id, tag_id)
         if tag == 'GPSInfo':
             continue
-        if isinstance(data, bytes):
-            data = data.decode()
-        exif_dict[tag] = data
+        try:
+            if isinstance(data, bytes):
+                data = data.decode()
+            exif_dict[tag] = data
+        except Exception:
+            pass
 
     # This seems dumb, but image._getexif() returns different information than image.getexif()
     raw_exif_data = {}
@@ -262,8 +277,7 @@ def process_image(fpath, max_thumbnail_width=400):
         lat = None
         lon = None
 
-    date_time = set([value for key, value in exif_dict.items() if key.startswith('DateTime')])
-    assert(len(date_time) <= 1)
+    date_time = set([value for key, value in exif_dict.items() if isinstance(key, str) and key.startswith('DateTime')])
     if len(date_time) == 0:
         date_time = None
     else:
@@ -331,7 +345,7 @@ class DirectoryMonitor():
         self, root_dir,
         subdir_only=None,
         add_existing_files=True, monitor_new=True, max_file_queue_size=100, 
-        num_processing_threads=2, processing_niceness=10, max_metadata_queue_size=5000, max_s3_queue_size=1000, num_s3_threads=2,
+        num_processing_threads=4, processing_niceness=10, max_metadata_queue_size=5000, max_s3_queue_size=1000, num_s3_threads=2,
     ):
         assert(os.path.isdir(root_dir))
         self.root_dir = os.path.abspath(root_dir)
@@ -501,7 +515,7 @@ def metadata_processor_worker(metadata_queue, s3_queue, path_queue, batch_size=5
                 sha_256_hashes_this_session.add(metadata['sha256_hash'])
             if len(metadata_batch) > 0:
                 new_metadata_batch, existing_metadata_batch = batch_check_existing_media_rows(metadata_batch)
-                print(len(new_metadata_batch), len(existing_metadata_batch))
+                # print(len(new_metadata_batch), len(existing_metadata_batch))
                 for metadata_x in new_metadata_batch:
                     s3_queue.put(metadata_x)
                 for metadata_x in existing_metadata_batch:
@@ -715,7 +729,11 @@ class DatabaseConnector():
 
 if __name__ == '__main__':
     monitor_new = False
-    dm = DirectoryMonitor(sys.argv[1], subdir_only=sys.argv[2], monitor_new=monitor_new)
+    if len(sys.argv) >= 3:
+        subdir_only=sys.argv[2]
+    else:
+        subdir_only=None
+    dm = DirectoryMonitor(sys.argv[1], subdir_only=subdir_only, monitor_new=monitor_new)
     if monitor_new:
         try:
             while True:
