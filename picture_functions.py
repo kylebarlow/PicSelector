@@ -21,14 +21,13 @@ import ffmpeg
 import numpy as np
 import pandas as pd
 
-# import boto3
-# # Session can be global and shared between processes/threads
-# session = boto3.session.Session()
-# client = session.client("s3")
-
 from sshtunnel import SSHTunnelForwarder
 import psycopg2
 import config
+
+import boto3
+import botocore
+import botocore.exceptions
 
 
 def process_media_file(event):
@@ -38,7 +37,7 @@ def process_media_file(event):
         metadata = process_image(fpath)
     elif filetype.helpers.is_video(fpath):
         metadata = process_video(fpath)
-    metadata['fpath'] = fpath
+    metadata['fpath'] = os.path.abspath(fpath)
     return metadata
 
 
@@ -328,14 +327,23 @@ def process_image(fpath, max_thumbnail_width=400):
 
 
 class DirectoryMonitor():
-    def __init__(self, root_dir, add_existing_files=True, monitor_new=True, max_file_queue_size=100, num_processing_threads=2, processing_niceness=10, max_metadata_queue_size=5000, max_s3_queue_size=1000, num_s3_threads=2):
+    def __init__(
+        self, root_dir,
+        subdir_only=None,
+        add_existing_files=True, monitor_new=True, max_file_queue_size=100, 
+        num_processing_threads=2, processing_niceness=10, max_metadata_queue_size=5000, max_s3_queue_size=1000, num_s3_threads=2,
+    ):
         assert(os.path.isdir(root_dir))
-        self.root_dir = root_dir
+        self.root_dir = os.path.abspath(root_dir)
+        self.subdir_only = subdir_only
+        if subdir_only is not None and os.path.isdir(subdir_only):
+            self.subdir_only = os.path.abspath(self.subdir_only)
         self.add_existing_files = add_existing_files
         self.queue = multiprocessing.Queue(maxsize=max_file_queue_size)
         self.watchdog_queue = multiprocessing.Queue()
         self.metadata_queue = multiprocessing.Queue(maxsize=max_metadata_queue_size)
         self.s3_queue = multiprocessing.Queue(maxsize=max_s3_queue_size)
+        self.path_queue = multiprocessing.Queue()
         self.num_processing_threads = num_processing_threads
         if monitor_new:
             self.initialize_watchdog()
@@ -345,23 +353,29 @@ class DirectoryMonitor():
             assert(add_existing_files)
 
         if self.add_existing_files:
-            self.initial_walker = multiprocessing.Process(target=walk_dir, args=(self.root_dir, self.queue))
+            if self.subdir_only is not None:
+                self.initial_walker = multiprocessing.Process(target=walk_dir, args=(self.subdir_only, self.queue))
+            else:
+                self.initial_walker = multiprocessing.Process(target=walk_dir, args=(self.root_dir, self.queue))
             self.initial_walker.start()
 
         self.media_process_pool = multiprocessing.Pool(
             processes=self.num_processing_threads,
             initializer=media_processor_worker,
-            initargs=(self.queue, self.metadata_queue, processing_niceness)
+            initargs=(self.queue, self.metadata_queue, processing_niceness, self.root_dir)
         )
 
-        self.metadata_worker = multiprocessing.Process(target=metadata_processor_worker, args=(self.metadata_queue, self.s3_queue, self.root_dir))
+        self.metadata_worker = multiprocessing.Process(target=metadata_processor_worker, args=(self.metadata_queue, self.s3_queue, self.path_queue))
         self.metadata_worker.start()
+
+        self.path_worker = multiprocessing.Process(target=path_queue_worker, args=(self.path_queue,))
+        self.path_worker.start()
 
         self.num_s3_threads = num_s3_threads
         self.s3_upload_pool = multiprocessing.Pool(
             processes=self.num_s3_threads,
             initializer=s3_upload_worker,
-            initargs=(self.s3_queue,)
+            initargs=(self.s3_queue, self.path_queue)
         )
 
         if not monitor_new:
@@ -388,11 +402,17 @@ class DirectoryMonitor():
             self.s3_queue.put(None)
         self.s3_upload_pool.close()
         self.s3_upload_pool.join()
+        self.path_queue.put(None)
+        self.path_worker.join()
 
     def initialize_watchdog(self):
         self.event_handler = FileWatchdog(self.watchdog_queue)
         self.observer = watchdog.observers.Observer()
-        self.observer.schedule(self.event_handler, self.root_dir, recursive=True)
+        if self.subdir_only is not None:
+            root_dir = self.subdir_only
+        else:
+            root_dir = self.root_dir
+        self.observer.schedule(self.event_handler, root_dir, recursive=True)
         self.observer.start()
 
 
@@ -411,30 +431,82 @@ class FileWatchdog(watchdog.events.PatternMatchingEventHandler):
         # return super().process(event)
 
 
-def media_processor_worker(file_queue, metadata_queue, niceness):
+def media_processor_worker(file_queue, metadata_queue, niceness, root_dir):
     os.nice(niceness)
     while True:
         event = file_queue.get()
         if event is None:
             break
         metadata = process_media_file(event)
+        metadata['fpath'] = os.path.abspath(metadata['fpath'])
+        metadata['fpath_relative'] = os.path.relpath(metadata['fpath'], root_dir)
         metadata_queue.put(metadata)
 
 
-def metadata_processor_worker(metadata_queue, s3_queue, root_dir, batch_size=50):
+def path_queue_worker(path_queue):
+    while True:
+        event = path_queue.get()
+        if event is None:
+            break
+        sha256_hash, fpath = event
+        
+        with DatabaseConnector() as conn:
+            existing = pd.read_sql_query(
+                '''SELECT id, sha256_hash FROM media WHERE sha256_hash=%s''', 
+                conn,
+                params=(psycopg2.Binary(sha256_hash),),
+            )
+            if len(existing) == 0:
+                path_queue.put(event)
+                continue
+            assert(len(existing) == 1)
+            media_id = int(existing.iloc[0]['id'])
+
+            existing_paths = pd.read_sql_query(
+                '''SELECT key_id FROM keys WHERE media_id=%s AND key=%s''', 
+                conn,
+                params=(media_id, fpath),
+            )
+            if len(existing_paths) > 0:
+                continue
+
+            cursor = conn.cursor()
+            cursor.execute(
+                '''INSERT INTO keys (media_id, key)
+                VALUES(%s, %s)
+                ;''',
+                (
+                    media_id, fpath,
+                ),
+            )
+            conn.commit()
+
+
+
+def metadata_processor_worker(metadata_queue, s3_queue, path_queue, batch_size=50):
     '''
-    Uploads to database in batches, and gives S3 uploaders work to do
+    Checks database for existing data in batches, and gives S3 uploaders work to do
     '''
     metadata_batch = []
+    sha_256_hashes_this_session = set()  # Used to see if we are already uploading file in a different path in this current run
+    
     while True:
         metadata = metadata_queue.get()
+        if metadata is not None and metadata['sha256_hash'] in sha_256_hashes_this_session:
+            path_queue.put((metadata['sha256_hash'], metadata['fpath_relative']))
+
         if metadata is None or len(metadata_batch)+1 >= batch_size:
-            if metadata is not None:
+            if metadata is not None and metadata['sha256_hash'] not in sha_256_hashes_this_session:
                 metadata_batch.append(metadata)
+                sha_256_hashes_this_session.add(metadata['sha256_hash'])
             if len(metadata_batch) > 0:
-                s3_upload_jobs = process_metadata_batch(metadata_batch, root_dir)
-                for s3_upload_job in s3_upload_jobs:
-                    s3_queue.put(s3_upload_job)
+                new_metadata_batch, existing_metadata_batch = batch_check_existing_media_rows(metadata_batch)
+                print(len(new_metadata_batch), len(existing_metadata_batch))
+                for metadata_x in new_metadata_batch:
+                    s3_queue.put(metadata_x)
+                for metadata_x in existing_metadata_batch:
+                    # No update logic for now, assume already existing and check path keys only
+                    path_queue.put((metadata_x['sha256_hash'], metadata_x['fpath_relative']))
                 metadata_batch = []
             if metadata is None:
                 break
@@ -442,34 +514,134 @@ def metadata_processor_worker(metadata_queue, s3_queue, root_dir, batch_size=50)
             metadata_batch.append(metadata)
         
 
-def process_metadata_batch(unfiltered_metadata_batch, root_dir):
-    s3_upload_jobs = []
+def batch_check_existing_media_rows(unfiltered_metadata_batch):
     with DatabaseConnector() as conn:
         existing = pd.read_sql_query(
             '''SELECT id, sha256_hash FROM media WHERE sha256_hash IN %s''', 
             conn,
             params=(tuple([psycopg2.Binary(d['sha256_hash']) for d in unfiltered_metadata_batch]),),
         )
-        print('%d existing out of %d' % (len(existing), len(unfiltered_metadata_batch)) )
+        # print('%d existing out of %d' % (len(existing), len(unfiltered_metadata_batch)) )
 
-        filtered_metadata_batch = unfiltered_metadata_batch
+        # existing_keys = pd.read_sql_query(
+        #     '''SELECT * FROM keys WHERE key IN %s INNER JOIN media ON media.id=key.media_id''',
+        #     conn,
+        #     params=(tuple([d['fpath_relative'] for d in unfiltered_metadata_batch]),),
+        # )
 
-        for metadata in filtered_metadata_batch:
-            if metadata['media_type'] == 'image':
-                media_type = 0
-            elif metadata['media_type'] == 'video':
-                media_type = 1
-            else:
-                raise Exception()
+    new_metadata_batch = [d for d in unfiltered_metadata_batch if d['sha256_hash'] not in [bytes(b) for b in existing['sha256_hash'].values]]
+    existing_metadata_batch = [d for d in unfiltered_metadata_batch if d['sha256_hash'] in [bytes(b) for b in existing['sha256_hash'].values]]
 
-    return s3_upload_jobs
+    return (new_metadata_batch, existing_metadata_batch)
 
 
-def s3_upload_worker(s3_queue):
+def s3_upload_worker(s3_queue, path_queue):
+    session = boto3.session.Session(
+        aws_access_key_id=config.access_key,
+        aws_secret_access_key=config.secret_key,
+    )
+    s3_client = session.client(
+        "s3",
+        config=config.boto_config,
+        endpoint_url=config.s3_endpoint_url,
+    )
+
     while True:
-        data = s3_queue.get()
-        if data is None:
+        metadata = s3_queue.get()
+        if metadata is None:
             break
+
+        if os.path.isfile(metadata['fpath']):
+            try:
+                response = s3_client.upload_file(metadata['fpath'], config.s3_bucket_name, metadata['fpath_relative'])
+            except botocore.exceptions.ClientError as e:
+                # logging.error(e)
+                continue
+        
+        if 'thumbnail' in metadata and 'thumbnail_path' in metadata['thumbnail'] and os.path.isfile(metadata['thumbnail']['thumbnail_path']):
+            fname, extension = os.path.splitext(metadata['fpath_relative'])
+            thumb_key = fname + '-%dw_%dh' % (metadata['thumbnail']['thumbnail_width'], metadata['thumbnail']['thumbnail_height']) + extension
+            try:
+                response = s3_client.upload_file(metadata['thumbnail']['thumbnail_path'], config.s3_bucket_name, thumb_key)
+                os.remove(metadata['thumbnail']['thumbnail_path'])
+            except botocore.exceptions.ClientError as e:
+                # logging.error(e)
+                continue
+            
+        # S3 uploads good, now do database stuff
+        if metadata['media_type'] == 'image':
+            media_type = 0
+        elif metadata['media_type'] == 'video':
+            media_type = 1
+
+        with DatabaseConnector() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                '''INSERT INTO media (sha256_hash, creation_time, media_type, file_size, height, width, latitude, longitude, s3_key)
+                VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ;''',
+                (
+                    metadata['sha256_hash'], metadata['creation_time'], media_type, metadata['size'],
+                    metadata['height'], metadata['width'], metadata['lat'], metadata['lon'],
+                    metadata['fpath_relative'],
+                ),
+            )
+            conn.commit()
+            existing = pd.read_sql_query(
+                '''SELECT id, sha256_hash FROM media WHERE sha256_hash=%s''', 
+                conn,
+                params=(psycopg2.Binary(metadata['sha256_hash']),),
+            )
+            assert(len(existing) == 1)
+            media_id = int(existing.iloc[0]['id'])
+
+            cursor.execute(
+                '''INSERT INTO thumbnail (media_id, key, height, width, file_size)
+                VALUES(%s, %s, %s, %s, %s);''',
+                (
+                    media_id, thumb_key, int(metadata['thumbnail']['thumbnail_height']),
+                    int(metadata['thumbnail']['thumbnail_width']), int(metadata['thumbnail']['thumbnail_size']),
+                ),
+            )
+
+            if metadata['media_type'] == 'video':
+                cursor.execute(
+                    '''INSERT INTO videos (id, duration)
+                    VALUES(%s, %s);''',
+                    (
+                        media_id, metadata['video_only']['duration'],
+                    ),
+                )
+
+            if metadata['media_type'] == 'image':
+                cursor.execute(
+                    '''INSERT INTO images (id,
+                    average_hash1, average_hash2, average_hash3, average_hash4,
+                    difference_hash1, difference_hash2, difference_hash3, difference_hash4,
+                    perceptual_hash1, perceptual_hash2, perceptual_hash3, perceptual_hash4
+                    )
+                    VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);''',
+                    (
+                        media_id,
+                        metadata['image_only']['hashes']['average'][:4],
+                        metadata['image_only']['hashes']['average'][4:8],
+                        metadata['image_only']['hashes']['average'][8:12],
+                        metadata['image_only']['hashes']['average'][12:16],
+                        metadata['image_only']['hashes']['difference'][:4],
+                        metadata['image_only']['hashes']['difference'][4:8],
+                        metadata['image_only']['hashes']['difference'][8:12],
+                        metadata['image_only']['hashes']['difference'][12:16],
+                        metadata['image_only']['hashes']['perceptual'][:4],
+                        metadata['image_only']['hashes']['perceptual'][4:8],
+                        metadata['image_only']['hashes']['perceptual'][8:12],
+                        metadata['image_only']['hashes']['perceptual'][12:16],
+                    ),
+                )
+            
+            conn.commit()
+            cursor.close()
+
+        path_queue.put((metadata['sha256_hash'], metadata['fpath_relative']))
 
 
 def combine_queues(main_queue, secondary_queue):
@@ -543,7 +715,7 @@ class DatabaseConnector():
 
 if __name__ == '__main__':
     monitor_new = False
-    dm = DirectoryMonitor(sys.argv[1], monitor_new=monitor_new)
+    dm = DirectoryMonitor(sys.argv[1], subdir_only=sys.argv[2], monitor_new=monitor_new)
     if monitor_new:
         try:
             while True:
