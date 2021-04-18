@@ -309,7 +309,7 @@ def process_image(fpath, max_thumbnail_width=400):
             pass
 
     max_size = (max_thumbnail_width, min(max_thumbnail_width*3, image.height))
-    thumbnail = image.copy()
+    thumbnail = PIL.ImageOps.exif_transpose(image).copy()
     thumbnail.thumbnail(max_size)
     with tempfile.NamedTemporaryFile('wb', suffix='_ithumb.jpg', delete=False) as f:
         thumbnail_path = os.path.abspath(f.name)
