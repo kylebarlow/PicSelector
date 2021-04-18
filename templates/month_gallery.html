@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width" />
+
+  <title>{{ year }}-{{ month }}</title>
+
+  <link rel="stylesheet" href="{{ url_for('static', filename='masonry-images.css')}}" />
+  <link rel="stylesheet" href="{{ url_for('static', filename='loader-ellips.css')}}" />
+
+</head>
+<body>
+
+<div class="container">
+
+<h1>Masonry images</h1>
+
+<div class="grid">
+  <div class="grid__col-sizer"></div>
+  <div class="grid__gutter-sizer"></div>
+  {% for thumbnail in thumbnails %}
+    <div class="grid__item"><img src="{{ thumbnail.url }}" /></div>
+  {% endfor %}
+</div>
+
+<p><a class="pagination__next" href="{{ next_month_url }}">Next</a></p>
+
+<div class="scroll-status">
+  <div class="infinite-scroll-request">
+    <div class="loader-ellips">
+      <span class="loader-ellips__dot loader-ellips__dot--1"></span>
+      <span class="loader-ellips__dot loader-ellips__dot--2"></span>
+      <span class="loader-ellips__dot loader-ellips__dot--3"></span>
+      <span class="loader-ellips__dot loader-ellips__dot--4"></span>
+    </div>
+  </div>
+  <p class="infinite-scroll-error">No more pages to load</p>
+  <p class="infinite-scroll-last">Last page loaded</p>
+</div>
+
+</div>
+
+<script src="{{ url_for('static', filename='node_modules/ev-emitter/ev-emitter.js')}}"></script>
+<script src="{{ url_for('static', filename='node_modules/fizzy-ui-utils/utils.js')}}"></script>
+<script src="{{ url_for('static', filename='node_modules/get-size/get-size.js')}}"></script>
+<script src="{{ url_for('static', filename='node_modules/outlayer/item.js')}}"></script>
+<script src="{{ url_for('static', filename='node_modules/outlayer/outlayer.js')}}"></script>
+<script src="{{ url_for('static', filename='node_modules/masonry-layout/masonry.js')}}"></script>
+<script src="{{ url_for('static', filename='node_modules/imagesloaded/imagesloaded.js')}}"></script>
+
+<script src="{{ url_for('static', filename='js/core.js')}}"></script>
+<script src="{{ url_for('static', filename='js/scroll-watch.js')}}"></script>
+<script src="{{ url_for('static', filename='js/page-load.js')}}"></script>
+<script src="{{ url_for('static', filename='js/history.js')}}"></script>
+<script src="{{ url_for('static', filename='js/button.js')}}"></script>
+<script src="{{ url_for('static', filename='js/status.js')}}"></script>
+<script src="{{ url_for('static', filename='js/masonry-images.js')}}"></script>
+
+</body>
+</html>
