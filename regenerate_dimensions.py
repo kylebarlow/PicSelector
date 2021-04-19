@@ -30,9 +30,9 @@ import boto3
 import botocore
 import botocore.exceptions
 
-from picture_functions import DatabaseConnector, process_image
-
 from tqdm import tqdm
+
+from picture_functions import DatabaseConnector, process_image
 
 root_dir = sys.argv[1]
 
@@ -49,22 +49,11 @@ WHERE media.media_type=0
         conn,
     )
 
-session = boto3.session.Session(
-    aws_access_key_id=config.access_key,
-    aws_secret_access_key=config.secret_key,
-)
-s3_client = session.client(
-    "s3",
-    config=config.boto_config,
-    endpoint_url=config.s3_endpoint_url,
-)
-
 print('Retrieved %d rows' % len(media))
 
 new_thumb_values = []
-keys_to_remove = []
 failed_image_paths = []
-for index, row in media.iterrows():
+for index, row in tqdm(list(media.iterrows())):
     ipath = os.path.join(root_dir, row['path_key'])
     if not os.path.isfile(ipath):
         print('Missing file:', ipath)
@@ -80,44 +69,33 @@ for index, row in media.iterrows():
     if 'thumbnail' in metadata and 'thumbnail_path' in metadata['thumbnail'] and os.path.isfile(metadata['thumbnail']['thumbnail_path']):
         fname, extension = os.path.splitext(metadata['fpath_relative'])
         thumb_key = fname + '-%dw_%dh' % (metadata['thumbnail']['thumbnail_width'], metadata['thumbnail']['thumbnail_height']) + extension
-        try:
-            response = s3_client.upload_file(metadata['thumbnail']['thumbnail_path'], config.s3_bucket_name, thumb_key)
-            os.remove(metadata['thumbnail']['thumbnail_path'])
-            new_thumb_values.append((row['media_id'], thumb_key, int(metadata['thumbnail']['thumbnail_height']), int(metadata['thumbnail']['thumbnail_width']), int(metadata['thumbnail']['thumbnail_size'])))
-            keys_to_remove.append(row['thumbnail_key'])
-        except botocore.exceptions.ClientError as e:
-            print(e)
-            continue
+        
+        os.remove(metadata['thumbnail']['thumbnail_path'])
+        new_thumb_values.append((row['media_id'], int(metadata['height']), int(metadata['width'])))
 
 if len(failed_image_paths) > 0:
     print('Failed image paths:', failed_image_paths)
-    with open('failed_image_paths.txt', 'w') as f:
+    with open('failed_image_paths_dim.txt', 'w') as f:
         for failed_image_path in failed_image_paths:
             f.write(failed_image_path+'\n')
 
-pd.DataFrame(new_thumb_values, columns=['media_id', 'key', 'height', 'width', 'filesize']).to_csv('new_thumb.csv', index=False)
+pd.DataFrame(new_thumb_values, columns=['media_id', 'height', 'width']).to_csv('regen_dim.csv', index=False)
 
-df = pd.read_csv('new_thumb.csv')
-new_thumb_values = []
-for index, row in tqdm(list(df.iterrows())):
-    new_thumb_values.append(tuple(row.values))
+# df = pd.read_csv('regen_dim.csv')
+# new_thumb_values = []
+# for index, row in df.iterrows():
+#     new_thumb_values.append(tuple(row.values))
 print('%d thumbnail rows to update' % len(new_thumb_values))
 
 with DatabaseConnector() as conn:
     cursor = conn.cursor()
-    update_query = """UPDATE thumbnail AS t 
-                    SET key = e.key,
+    update_query = """UPDATE media AS m
                     height = e.height,
-                    width = e.width,
-                    file_size = e.file_size
-                    FROM (VALUES %s) AS e(media_id, key, height, width, file_size) 
-                    WHERE e.media_id = t.media_id;"""
+                    width = e.width
+                    FROM (VALUES %s) AS e(id, height, width) 
+                    WHERE e.id = m.id;"""
 
     psycopg2.extras.execute_values(
         cursor, update_query, new_thumb_values, template=None, page_size=100,
     )
     conn.commit()
-
-print('%d thumbnail keys to remove' % len(keys_to_remove))
-for key in keys_to_remove:
-    s3_client.delete_object(Bucket=config.s3_bucket_name, Key=key)

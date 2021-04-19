@@ -211,27 +211,28 @@ def get_decimal_from_dms(dms, ref):
     return degrees + minutes + seconds
 
 
-def process_image(fpath, max_thumbnail_width=400):
+def process_image(fpath, max_thumbnail_width=400, run_hashing=True):
     with open(fpath, 'rb') as f:
         fdata = f.read()
     sha_hash = hashlib.sha256(fdata).digest()
     image = PIL.Image.open(io.BytesIO(fdata))
     hashes = {}
     hashes['average'] = ' ' * 16
-    try:
-        hashes['average'] = str(imagehash.average_hash(image))
-    except Exception:
-        pass
     hashes['perceptual'] = ' ' * 16
-    try:
-        hashes['perceptual'] = str(imagehash.phash(image))
-    except Exception:
-        pass
     hashes['difference'] = ' ' * 16
-    try:
-        hashes['difference'] = str(imagehash.dhash(image))
-    except Exception:
-        pass
+    if run_hashing:
+        try:
+            hashes['average'] = str(imagehash.average_hash(image))
+        except Exception:
+            pass
+        try:
+            hashes['perceptual'] = str(imagehash.phash(image))
+        except Exception:
+            pass
+        try:
+            hashes['difference'] = str(imagehash.dhash(image))
+        except Exception:
+            pass
 
     exif_data = image.getexif()
     exif_dict = {}
@@ -311,6 +312,8 @@ def process_image(fpath, max_thumbnail_width=400):
 
     max_size = (max_thumbnail_width, min(max_thumbnail_width*3, image.height))
     thumbnail = PIL.ImageOps.exif_transpose(image).copy()
+    width = thumbnail.width
+    height = thumbnail.height
     thumbnail.thumbnail(max_size)
     with tempfile.NamedTemporaryFile('wb', suffix='_ithumb.jpg', delete=False) as f:
         thumbnail_path = os.path.abspath(f.name)
@@ -323,8 +326,8 @@ def process_image(fpath, max_thumbnail_width=400):
     return {
         'lat': lat,
         'lon': lon,
-        'height': image.height,
-        'width': image.width,
+        'height': height,
+        'width': width,
         'size': sys.getsizeof(fdata),
         'sha256_hash': sha_hash,
         'creation_time': date_time,
