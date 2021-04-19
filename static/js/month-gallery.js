@@ -16,7 +16,7 @@ let msnry = new Masonry( '.grid', {
     },
 } );
 
-// lazyload();
+lazyload();
 
 var openPhotoSwipe = function(mediaIndex) {
     var pswpElement = document.querySelectorAll('.pswp')[0];
