@@ -26,7 +26,7 @@ def hello_world():
 
 
 @app.route('/gallery/<int:year>/<int:month>')
-def month_gallery(year, month):
+def month_gallery(year, month, column_width=400):
     this_month_start = datetime.datetime(year, month, 1)
     next_month_start = (this_month_start + datetime.timedelta(days=32)).replace(day=1)
     prev_month_start = (this_month_start - datetime.timedelta(days=5)).replace(day=1)
@@ -38,7 +38,7 @@ def month_gallery(year, month):
             JOIN thumbnail ON thumbnail.media_id=media.id
             WHERE creation_time >= %s
             AND creation_time <= %s
-            ORDER BY creation_time
+            ORDER BY creation_time DESC
             ''',
             conn,
             params=(
@@ -58,6 +58,16 @@ def month_gallery(year, month):
 
     thumbnails = []
     for index, row in media.iterrows():
+        # width = min(column_width, row['width'])
+        # if width == row['width']:
+        #     height = row['height']
+        # else:
+        #     height = int( (column_width / row['width']) * row['height'] )
+        if index == len(media)-1:
+            comma = ''
+        else:
+            comma = ','
+
         thumbnails.append(
             {
                 'url': s3_client.generate_presigned_url(
@@ -68,13 +78,28 @@ def month_gallery(year, month):
                     },
                     ExpiresIn=60*60,  # One hour in seconds
                 ),
+                'original_url': s3_client.generate_presigned_url(
+                    ClientMethod='get_object',
+                    Params={
+                        'Bucket': config.s3_bucket_name,
+                        'Key': row['s3_key'],
+                    },
+                    ExpiresIn=60*60,  # One hour in seconds
+                ),
+                'width': row['thumbnail_width'],
+                'height': row['thumbnail_height'],
+                'original_width': row['width'],
+                'original_height': row['height'],
+                'comma': comma,
+                'index': index,
             }
         )
     
     return flask.render_template(
-        'month_gallery.html',
+        'month_gallery_new.html',
         thumbnails=thumbnails,
-        next_month_url=flask.url_for('month_gallery', year=prev_month_start.year, month=prev_month_start.month)
+        year=year, month=month,
+        next_month_url=flask.url_for('month_gallery', year=prev_month_start.year, month=prev_month_start.month),
     )
 
 

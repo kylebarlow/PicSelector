@@ -20,7 +20,7 @@
   <div class="grid__col-sizer"></div>
   <div class="grid__gutter-sizer"></div>
   {% for thumbnail in thumbnails %}
-    <div class="grid__item"><img src="{{ thumbnail.url }}" /></div>
+    <div class="grid__item"><a href="{{ thumbnail.original_url }}"><img src="{{ thumbnail.url }}" /></a></div>
   {% endfor %}
 </div>
 

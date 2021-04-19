@@ -13,6 +13,7 @@ import watchdog
 import watchdog.events
 import watchdog.observers
 import PIL
+import PIL.ImageOps
 from PIL.ExifTags import TAGS, GPSTAGS
 import imagehash
 # import face_recognition
