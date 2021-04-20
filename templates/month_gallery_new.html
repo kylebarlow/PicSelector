@@ -25,18 +25,20 @@
   <h1>{{ year }}-{{ month }}</h1>
 
   <div class="grid">
+    <div class="grid-sizer"></div>
+    <div class="gutter-sizer"></div>
     {% for thumbnail in thumbnails %}
     {% if thumbnail.media_type == 0 %}
-    <div class="grid-item" style="height:{{ thumbnail.height }}px; width:{{ thumbnail.width }}px;" onclick="openPhotoSwipe({{ thumbnail.photoswipe_index }})">
+    <div class="grid-item" onclick="openPhotoSwipe({{ thumbnail.photoswipe_index }})">
       <!-- <img src="{{ thumbnail.url }}" width="{{ thumbnail.width }}" height="{{ thumbnail.height }}" /> -->
-      <img class="lazyload" data-src="{{ thumbnail.url }}" width="{{ thumbnail.width }}" height="{{ thumbnail.height }}" />
+      <img src="{{ thumbnail.url }}"/>
     </div>
     {% else %}
-    <div class="grid-item" style="height:{{ thumbnail.height }}px; width:{{ thumbnail.width }}px;">
+    <!-- <div class="grid-item">
       <video controls poster="{{ thumbnail.url }}" height="{{ thumbnail.height }}" width="{{ thumbnail.width }}">
         <source src="{{ thumbnail.original_url }}" type="video/{{ thumbnail.video_type }}">
       </video>
-    </div>
+    </div> -->
     {% endif %}
     {% endfor %}
   </div>  
@@ -146,9 +148,14 @@
   ];
 </script>
 
+<script
+  src="https://code.jquery.com/jquery-3.6.0.min.js"
+  integrity="sha256-/xUj+3OJU5yExlq6GSYGSHk7tPXikynS7ogEvDej/m4="
+  crossorigin="anonymous"></script>
+<script src="https://unpkg.com/imagesloaded@4/imagesloaded.pkgd.min.js"></script>
 <!-- <script src="{{ url_for('static', filename='node_modules/masonry-layout/masonry.js')}}"></script> -->
 <script src="https://unpkg.com/masonry-layout@4/dist/masonry.pkgd.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/lazyload@2.0.0-rc.2/lazyload.js"></script>
+<!-- <script src="https://cdn.jsdelivr.net/npm/lazyload@2.0.0-rc.2/lazyload.js"></script> -->
 <script src="{{ url_for('static', filename='js/month-gallery.js')}}"></script>
 
 </body>

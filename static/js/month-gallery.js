@@ -1,22 +1,21 @@
-let msnry = new Masonry( '.grid', {
-    itemSelector: '.grid-item',
-    // columnWidth: '.grid__col-sizer',
-    // gutter: '.grid__gutter-sizer',
-    columnWidth: 400,
-    isFitWidth: true,
-    stagger: 30,
-    gutter: 10,
-    visibleStyle: {
-      transform: 'translateY(0)',
-      opacity: 1,
-    },
-    hiddenStyle: {
-      transform: 'translateY(100px)',
-      opacity: 0,
-    },
-} );
+// let msnry = new Masonry( '.grid', {
+//   itemSelector: '.grid-item',
+//   // use element for option
+//   columnWidth: '.grid-sizer',
+//   percentPosition: true
+// } );
 
-lazyload();
+// // lazyload();
+var $grid = $('.grid').imagesLoaded( function() {
+  // init Masonry after all images have loaded
+  $grid.masonry({
+    itemSelector: '.grid-item',
+    // use element for option
+    columnWidth: '.grid-sizer',
+    gutter: '.gutter-sizer',
+    percentPosition: true
+  });
+});
 
 var openPhotoSwipe = function(mediaIndex) {
     var pswpElement = document.querySelectorAll('.pswp')[0];
