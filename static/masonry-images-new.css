@@ -5,7 +5,7 @@ body { font-family: sans-serif; }
 /* ---- grid ---- */
 
 .grid {
-  background: #EEE;
+  background: #FFF;
   /* center */
   margin: 0 auto;
 }
@@ -13,9 +13,9 @@ body { font-family: sans-serif; }
 
 @media (max-width: 3000px) {
   .grid-sizer,
-  .grid-item { width: 24%; }
+  .grid-item { width: 18%; }
 
-  .gutter-sizer { width: 1.33%; }
+  .gutter-sizer { width: 2.5%; }
 }
 
 @media (max-width: 1700px) {
