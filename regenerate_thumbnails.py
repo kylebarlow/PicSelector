@@ -44,7 +44,9 @@ with DatabaseConnector() as conn:
        thumbnail.width as thumbnail_width, thumbnail.height as thumbnail_height from media
 JOIN thumbnail ON thumbnail.media_id=media.id
 JOIN keys on media.id = keys.media_id
-WHERE media.media_type=0
+WHERE media.media_type=0 AND
+(creation_time < '2017-05-01 00:00:00.000000'
+            OR creation_time > '2017-05-31 23:59:59.0000000')
         ''',
         conn,
     )
@@ -64,7 +66,7 @@ print('Retrieved %d rows' % len(media))
 new_thumb_values = []
 keys_to_remove = []
 failed_image_paths = []
-for index, row in media.iterrows():
+for index, row in tqdm(list(media.iterrows())):
     ipath = os.path.join(root_dir, row['path_key'])
     if not os.path.isfile(ipath):
         print('Missing file:', ipath)
@@ -84,7 +86,8 @@ for index, row in media.iterrows():
             response = s3_client.upload_file(metadata['thumbnail']['thumbnail_path'], config.s3_bucket_name, thumb_key)
             os.remove(metadata['thumbnail']['thumbnail_path'])
             new_thumb_values.append((row['media_id'], thumb_key, int(metadata['thumbnail']['thumbnail_height']), int(metadata['thumbnail']['thumbnail_width']), int(metadata['thumbnail']['thumbnail_size'])))
-            keys_to_remove.append(row['thumbnail_key'])
+            if row['thumbnail_key'] != thumb_key:
+                keys_to_remove.append(row['thumbnail_key'])
         except botocore.exceptions.ClientError as e:
             print(e)
             continue
@@ -105,12 +108,12 @@ print('%d thumbnail rows to update' % len(new_thumb_values))
 
 with DatabaseConnector() as conn:
     cursor = conn.cursor()
-    update_query = """UPDATE thumbnail AS t 
+    update_query = """UPDATE thumbnail AS t
                     SET key = e.key,
                     height = e.height,
                     width = e.width,
                     file_size = e.file_size
-                    FROM (VALUES %s) AS e(media_id, key, height, width, file_size) 
+                    FROM (VALUES %s) AS e(media_id, key, height, width, file_size)
                     WHERE e.media_id = t.media_id;"""
 
     psycopg2.extras.execute_values(

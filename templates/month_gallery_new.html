@@ -26,10 +26,18 @@
 
   <div class="grid">
     {% for thumbnail in thumbnails %}
-      <div class="grid-item" style="height:{{ thumbnail.height }}px; width:{{ thumbnail.width }}px;" onclick="openPhotoSwipe({{ thumbnail.index }})">
-        <!-- <img src="{{ thumbnail.url }}" width="{{ thumbnail.width }}" height="{{ thumbnail.height }}" /> -->
-        <img class="lazyload" data-src="{{ thumbnail.url }}" width="{{ thumbnail.width }}" height="{{ thumbnail.height }}" />
+    {% if thumbnail.media_type == 0 %}
+    <div class="grid-item" style="height:{{ thumbnail.height }}px; width:{{ thumbnail.width }}px;" onclick="openPhotoSwipe({{ thumbnail.photoswipe_index }})">
+      <!-- <img src="{{ thumbnail.url }}" width="{{ thumbnail.width }}" height="{{ thumbnail.height }}" /> -->
+      <img class="lazyload" data-src="{{ thumbnail.url }}" width="{{ thumbnail.width }}" height="{{ thumbnail.height }}" />
     </div>
+    {% else %}
+    <div class="grid-item" style="height:{{ thumbnail.height }}px; width:{{ thumbnail.width }}px;">
+      <video controls poster="{{ thumbnail.url }}" height="{{ thumbnail.height }}" width="{{ thumbnail.width }}">
+        <source src="{{ thumbnail.original_url }}" type="video/{{ thumbnail.video_type }}">
+      </video>
+    </div>
+    {% endif %}
     {% endfor %}
   </div>  
 
@@ -126,12 +134,14 @@
   // Add in Photoswipe items here
   var items = [
   {% for thumbnail in thumbnails %}
+  {% if thumbnail.media_type == 0 %}
   {
       src: '{{ thumbnail.original_url }}',
       msrc: '{{ thumbnail.url }}',
       w: {{ thumbnail.original_width }},
       h: {{ thumbnail.original_height }}
   }{{ thumbnail.comma }}
+  {% endif %}
   {% endfor %}
   ];
 </script>

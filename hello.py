@@ -1,3 +1,4 @@
+import os
 import datetime
 
 import flask
@@ -57,43 +58,53 @@ def month_gallery(year, month, column_width=400):
     )
 
     thumbnails = []
+    photoswipe_i = 0
+    last_photo_index = media.loc[ media['media_type']==0 ].iloc[-1].name
+    
     for index, row in media.iterrows():
         # width = min(column_width, row['width'])
         # if width == row['width']:
         #     height = row['height']
         # else:
         #     height = int( (column_width / row['width']) * row['height'] )
-        if index == len(media)-1:
+        if index == last_photo_index:
             comma = ''
         else:
             comma = ','
 
-        thumbnails.append(
-            {
-                'url': s3_client.generate_presigned_url(
-                    ClientMethod='get_object',
-                    Params={
-                        'Bucket': config.s3_bucket_name,
-                        'Key': row['thumbnail_key'],
-                    },
-                    ExpiresIn=60*60,  # One hour in seconds
-                ),
-                'original_url': s3_client.generate_presigned_url(
-                    ClientMethod='get_object',
-                    Params={
-                        'Bucket': config.s3_bucket_name,
-                        'Key': row['s3_key'],
-                    },
-                    ExpiresIn=60*60,  # One hour in seconds
-                ),
-                'width': row['thumbnail_width'],
-                'height': row['thumbnail_height'],
-                'original_width': row['width'],
-                'original_height': row['height'],
-                'comma': comma,
-                'index': index,
-            }
-        )
+        d = {
+            'url': s3_client.generate_presigned_url(
+                ClientMethod='get_object',
+                Params={
+                    'Bucket': config.s3_bucket_name,
+                    'Key': row['thumbnail_key'],
+                },
+                ExpiresIn=60*60,  # One hour in seconds
+            ),
+            'original_url': s3_client.generate_presigned_url(
+                ClientMethod='get_object',
+                Params={
+                    'Bucket': config.s3_bucket_name,
+                    'Key': row['s3_key'],
+                },
+                ExpiresIn=60*60,  # One hour in seconds
+            ),
+            'width': row['thumbnail_width'],
+            'height': row['thumbnail_height'],
+            'original_width': row['width'],
+            'original_height': row['height'],
+            'media_type': row['media_type'],
+            'comma': comma,
+            'photoswipe_index': photoswipe_i,
+        }
+        if row['media_type'] == 1:
+            fname, extension = os.path.splitext(row['s3_key'])
+            d['video_type'] = extension[1:]
+            # d['html'] = '''<video width="%d" height="%d" controls autoplay muted><source src="%s" type="video/mp4"></video>''' % (d['original_height'], d['original_height'], d['original_url'])
+        else:
+            photoswipe_i += 1
+            d['video_type'] = ''
+        thumbnails.append(d)
     
     return flask.render_template(
         'month_gallery_new.html',
