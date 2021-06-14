@@ -34,11 +34,11 @@
       <img src="{{ thumbnail.url }}"/>
     </div>
     {% else %}
-    <!-- <div class="grid-item">
-      <video controls poster="{{ thumbnail.url }}" height="{{ thumbnail.height }}" width="{{ thumbnail.width }}">
+    <div class="grid-item">
+      <video controls poster="{{ thumbnail.url }}">
         <source src="{{ thumbnail.original_url }}" type="video/{{ thumbnail.video_type }}">
       </video>
-    </div> -->
+    </div>
     {% endif %}
     {% endfor %}
   </div>  
