@@ -317,7 +317,10 @@ def process_image(fpath, max_thumbnail_width=400, run_hashing=True):
     thumbnail.thumbnail(max_size)
     with tempfile.NamedTemporaryFile('wb', suffix='_ithumb.jpg', delete=False) as f:
         thumbnail_path = os.path.abspath(f.name)
-        thumbnail.save(f, format='JPEG')
+        try:
+            thumbnail.save(f, format='JPEG')
+        except OSError:
+            thumbnail.convert('RGB').save(f, format='JPEG')
 
     # fr_image = face_recognition.load_image_file(io.BytesIO(fdata))
     # face_locations = face_recognition.face_locations(fr_image)
@@ -357,6 +360,7 @@ class DirectoryMonitor():
         if subdir_only is not None and os.path.isdir(subdir_only):
             self.subdir_only = os.path.abspath(self.subdir_only)
         self.add_existing_files = add_existing_files
+        self.progress_queue = multiprocessing.Queue()
         self.queue = multiprocessing.Queue(maxsize=max_file_queue_size)
         self.watchdog_queue = multiprocessing.Queue()
         self.metadata_queue = multiprocessing.Queue(maxsize=max_metadata_queue_size)
@@ -659,6 +663,7 @@ def s3_upload_worker(s3_queue, path_queue):
             conn.commit()
             cursor.close()
 
+        print('S3 upload complete:', os.path.basename(metadata['fpath']))
         path_queue.put((metadata['sha256_hash'], metadata['fpath_relative']))
 
 

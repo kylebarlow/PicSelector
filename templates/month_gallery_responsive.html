@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width" />
+
+  <title>{{ year }}-{{ month }}</title>
+  
+</head>
+<body>
+
+<div class="container">
+
+  <h1>{{ year }}-{{ month }}</h1>
+  {% for thumbnail in thumbnails %}
+  {% if thumbnail.media_type == 0 %}
+  {
+      src: '{{ thumbnail.original_url }}',
+      msrc: '{{ thumbnail.url }}',
+      w: {{ thumbnail.original_width }},
+      h: {{ thumbnail.original_height }}
+  }{{ thumbnail.comma }}
+  {% endif %}
+  {% endfor %}
+  ];
+</div>
+</body>
+</html>
