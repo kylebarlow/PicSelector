@@ -61,7 +61,7 @@ def make_ss_time(time_in_s):
     return str(datetime.timedelta(seconds=time_in_s))
 
 
-def process_video(fpath, max_thumbnail_width=400, max_thumbnail_samples=5000):
+def process_video(fpath, max_thumbnail_height=400, max_thumbnail_samples=5000):
     info = find_probe_info(ffmpeg.probe(fpath), desired_keys=['duration', 'location', 'creation_time', 'height', 'width'])
     # pprint(ffmpeg.probe(fpath))
 
@@ -118,7 +118,7 @@ def process_video(fpath, max_thumbnail_width=400, max_thumbnail_samples=5000):
             with tempfile.NamedTemporaryFile('wb', suffix='_vthumb.jpg', delete=False) as f:
                 thumbnail_path = os.path.abspath(f.name)
             try:
-                generate_thumbnail(fpath, thumbnail_path, ss, max_thumbnail_width)
+                generate_thumbnail(fpath, thumbnail_path, ss, max_thumbnail_height)
                 thumbnail_paths.append(thumbnail_path)
             except Exception:
                 pass
@@ -211,7 +211,7 @@ def get_decimal_from_dms(dms, ref):
     return degrees + minutes + seconds
 
 
-def process_image(fpath, max_thumbnail_width=400, run_hashing=True):
+def process_image(fpath, max_thumbnail_height=400, run_hashing=True):
     with open(fpath, 'rb') as f:
         fdata = f.read()
     sha_hash = hashlib.sha256(fdata).digest()
@@ -310,7 +310,7 @@ def process_image(fpath, max_thumbnail_width=400, run_hashing=True):
         except Exception:
             pass
 
-    max_size = (max_thumbnail_width, min(max_thumbnail_width*3, image.height))
+    max_size = (min(max_thumbnail_height*3, image.height), max_thumbnail_height)
     thumbnail = PIL.ImageOps.exif_transpose(image).copy()
     width = thumbnail.width
     height = thumbnail.height
