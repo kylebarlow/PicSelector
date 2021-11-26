@@ -107,7 +107,7 @@ def month_gallery(year, month, column_width=400):
         thumbnails.append(d)
     
     return flask.render_template(
-        'month_gallery_new.html',
+        'month_gallery_simple.html',
         thumbnails=thumbnails,
         year=year, month=month,
         next_month_url=flask.url_for('month_gallery', year=prev_month_start.year, month=prev_month_start.month),

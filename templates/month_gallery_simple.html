@@ -1,0 +1,28 @@
+<!-- https://www.w3schools.com/css/css_image_gallery.asp -->
+
+<!doctype html>
+<html lang="en">
+    <head>
+    </head>
+    <body>
+    
+    {% for thumbnail in thumbnails %}
+    {% if thumbnail.media_type == 0 %}
+    <div class="gallery">
+        <a href="{{ thumbnail.original_url }}">
+            <img src="{{ thumbnail.url }}" alt="Cinque Terre" width="{{ thumbnail.original_width }}" height="{{ thumbnail.original_height }}">
+        </a>
+        <div class="desc">Add a description here</div>
+    </div>
+    {% else %}
+    <div class="gallery">
+        <video controls poster="{{ thumbnail.url }}">
+          <source src="{{ thumbnail.original_url }}" type="video/{{ thumbnail.video_type }}" width="{{ thumbnail.original_width }}" height="{{ thumbnail.original_height }}">
+        </video>
+        <div class="desc">Video</div>
+      </div>
+    {% endif %}
+    {% endfor %}
+    
+    </body>
+    </html> 

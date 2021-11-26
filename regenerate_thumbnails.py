@@ -45,8 +45,9 @@ with DatabaseConnector() as conn:
 JOIN thumbnail ON thumbnail.media_id=media.id
 JOIN keys on media.id = keys.media_id
 WHERE media.media_type=0 AND
-(creation_time < '2017-05-01 00:00:00.000000'
-            OR creation_time > '2017-05-31 23:59:59.0000000')
+            creation_time > '2020-12-31 23:59:59.0000000' AND ((thumbnail.width >= thumbnail.height
+    AND thumbnail.height < 400) OR (thumbnail.height > 400)
+    )
         ''',
         conn,
     )
