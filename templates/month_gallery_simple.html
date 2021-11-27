@@ -3,26 +3,33 @@
 <!doctype html>
 <html lang="en">
     <head>
+      <link rel="stylesheet" href="{{ url_for('static', filename='gallery.css') }}">
     </head>
     <body>
-    
+    <h1>{{ year }}-{{ month }}{{ page_header_text }}</h1>
     {% for thumbnail in thumbnails %}
     {% if thumbnail.media_type == 0 %}
     <div class="gallery">
         <a href="{{ thumbnail.original_url }}">
             <img src="{{ thumbnail.url }}" alt="Cinque Terre" width="{{ thumbnail.original_width }}" height="{{ thumbnail.original_height }}">
         </a>
-        <div class="desc">Add a description here</div>
+        <div class="desc">{{ thumbnail.formatted_date }}</div>
     </div>
     {% else %}
     <div class="gallery">
-        <video controls poster="{{ thumbnail.url }}">
-          <source src="{{ thumbnail.original_url }}" type="video/{{ thumbnail.video_type }}" width="{{ thumbnail.original_width }}" height="{{ thumbnail.original_height }}">
+        <video controls poster="{{ thumbnail.url }}" width="{{ thumbnail.width }}" height="{{ thumbnail.height }}">
+          <source src="{{ thumbnail.original_url }}" type="video/{{ thumbnail.video_type }}">
         </video>
-        <div class="desc">Video</div>
+        <div class="desc">{{ thumbnail.formatted_date }}</div>
       </div>
     {% endif %}
     {% endfor %}
-    
+    {% if next_page_url != '' %}
+    <h1><a href="{{ next_page_url }}">Next Page</a></h1>
+    {% endif %}
+    <h2><a href="{{ prev_month_url }}">Previous month</a></h2>
+    {% if next_month_url != 'None' %}
+    <h2><a href="{{ next_month_url }}">Next month</a></h2>
+    {% endif %}
     </body>
     </html> 
