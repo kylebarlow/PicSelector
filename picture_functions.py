@@ -721,13 +721,13 @@ class DatabaseConnector():
             self.server.start()
             self.local_bind_port = self.server.local_bind_port
 
-            self.conn = psycopg2.connect(
-                dbname=self.database_name,
-                user=self.postgres_user,
-                password=self.postgres_pass,
-                port=self.local_bind_port,
-                host=self.postgres_host,
-            )
+        self.conn = psycopg2.connect(
+            dbname=self.database_name,
+            user=self.postgres_user,
+            password=self.postgres_pass,
+            port=self.local_bind_port,
+            host=self.postgres_host,
+        )
         return self.conn
 
     def __exit__(self, exc_type, exc_val, exc_tb):
