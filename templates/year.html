@@ -1,0 +1,7 @@
+{% extends "flask_user_layout.html" %}
+{% block content %}
+<h2>Months</h2>
+{% for month, month_link in month_tuples %}
+<a href="{{ month_link }}">{{ month }}</a>
+{% endfor %}
+{% endblock %}

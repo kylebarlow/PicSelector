@@ -1,8 +1,7 @@
 <!-- https://www.w3schools.com/css/css_image_gallery.asp -->
 
-<!doctype html>
-<html lang="en">
-    <head>
+{% extends 'flask_user_layout.html' %}
+{% block extra_css %}
       <meta charset="utf-8" />
       <meta name="viewport" content="width=device-width" />
 
@@ -20,7 +19,9 @@
       <link rel="stylesheet" href="{{ url_for('static', filename='photoswipe/default-skin/default-skin.css')}}">
     </head>
     <body>
-    <h1>{{ year }}-{{ month }}{{ page_header_text }}</h1>
+{% endblock %}
+{% block content %}
+    <h2>{{ year }}-{{ month }}{{ page_header_text }}</h2>
     {% for thumbnail in thumbnails %}
     {% if thumbnail.media_type == 0 %}
     <div class="gallery" onclick="openPhotoSwipe({{ thumbnail.photoswipe_index }})">
@@ -130,5 +131,4 @@
   ];
 </script>
 <script src="{{ url_for('static', filename='js/month-gallery-simple.js')}}"></script>
-    </body>
-    </html> 
+{% endblock %}

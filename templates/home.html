@@ -1,0 +1,7 @@
+{% extends "flask_user_layout.html" %}
+{% block content %}
+<h2>Pictures</h2>
+{% for year, year_link in year_tuples %}
+<a href="{{ year_link }}">{{ year }}</a>
+{% endfor %}
+{% endblock %}

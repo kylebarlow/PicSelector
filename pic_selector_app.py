@@ -4,13 +4,13 @@ import calendar
 import datetime
 
 import flask
-from flask import Flask
-import flask_login
+from flask import render_template_string
+from flask_user import login_required, UserManager, roles_required
+
 
 import pandas as pd
 # import psycopg2
 
-import settings_env
 from picture_functions import DatabaseConnector
 import config
 
@@ -18,39 +18,75 @@ import boto3
 # import botocore
 import botocore.exceptions
 
-app = Flask(__name__)
-app.secret_key = settings_env.secret_key
-login_manager = flask_login.LoginManager()
-login_manager.init_app(app)
+from sql_alchemy_classes import *
 
+# Create all database tables
+# db.create_all()
+
+# Setup Flask-User and specify the User data-model
+user_manager = UserManager(app, db, User)
+
+# The Home page is accessible to anyone
 @app.route('/')
-def hello_world():
-    return 'Hello, World!'
+def home_page():
+    years = pd.read_sql_query('''
+        SELECT DISTINCT EXTRACT(YEAR FROM creation_time) as year
+        FROM media
+        WHERE creation_time >= '2000-01-01 01:00:00'
+        ORDER BY year
+    ''', db.engine)['year'].values
+    years = [str(int(year)) for year in years]
+    year_links = [flask.url_for('year_gallery', year=year) for year in years]
+    year_tuples = [(x, y) for x, y in zip(years, year_links)]
+    return flask.render_template('home.html', year_tuples=year_tuples)
+
+@app.route('/gallery/<int:year>')
+@roles_required('Admin')
+@login_required
+def year_gallery(year):
+    months = pd.read_sql_query('''
+        SELECT DISTINCT EXTRACT(MONTH FROM creation_time) as month
+        FROM media
+        WHERE creation_time >= '%d-01-01 00:00:00'
+        AND creation_time <= '%d-12-31 23:59:59'
+        ORDER BY month
+    ''' % (int(year), int(year)), db.engine)['month'].values
+    months = [str(int(month)) for month in months]
+    month_links = [flask.url_for('month_gallery', year=year, month=month) for month in months]
+    month_tuples = [(x, y) for x, y in zip(months, month_links)]
+    return flask.render_template('year.html', month_tuples=month_tuples)
+
+@app.route('/robots.txt')
+def robots():
+    return 'User-agent: * Disallow: /'
 
 @app.route('/gallery/<int:year>/<int:month>')
+@roles_required('Admin')
+@login_required
 def month_gallery(year, month):
     return month_gallery_page(year, month, 1)
 
 @app.route('/gallery/<int:year>/<int:month>/<int:page>')
+@roles_required('Admin')
+@login_required
 def month_gallery_page(year, month, page, column_width=400, items_per_page=50):
     this_month_start = datetime.datetime(year, month, 1)
     next_month_start = (this_month_start + datetime.timedelta(days=calendar.monthrange(year, month)[1] + 5)).replace(day=1)
     prev_month_start = (this_month_start - datetime.timedelta(days=5)).replace(day=1)
 
-    with DatabaseConnector() as conn:
-        media = pd.read_sql_query(
-            '''
-            SELECT media.creation_time, media.media_type, media.height, media.width, media.s3_key, thumbnail.key as thumbnail_key, thumbnail.width as thumbnail_width, thumbnail.height as thumbnail_height from media
-            JOIN thumbnail ON thumbnail.media_id=media.id
-            WHERE creation_time >= %s
-            AND creation_time < %s
-            ORDER BY creation_time ASC
-            ''',
-            conn,
-            params=(
-                this_month_start, next_month_start,
-            ),
-        )
+    media = pd.read_sql_query(
+        '''
+        SELECT media.creation_time, media.media_type, media.height, media.width, media.s3_key, thumbnail.key as thumbnail_key, thumbnail.width as thumbnail_width, thumbnail.height as thumbnail_height from media
+        JOIN thumbnail ON thumbnail.media_id=media.id
+        WHERE creation_time >= %s
+        AND creation_time < %s
+        ORDER BY creation_time ASC
+        ''',
+        db.engine,
+        params=(
+            this_month_start, next_month_start,
+        ),
+    )
 
     session = boto3.session.Session(
         aws_access_key_id=config.access_key,
@@ -138,9 +174,3 @@ def month_gallery_page(year, month, page, column_width=400, items_per_page=50):
         next_month_url=next_month_url,
         prev_month_url=flask.url_for('month_gallery', year=prev_month_start.year, month=prev_month_start.month),
     )
-
-
-@login_manager.user_loader
-def load_user(user_id):
-    return flask.User.get(user_id)
-
