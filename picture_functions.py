@@ -6,6 +6,7 @@ import time
 import hashlib
 import multiprocessing
 import tempfile
+import argparse
 from pprint import pprint
 
 import filetype
@@ -351,11 +352,13 @@ class DirectoryMonitor():
     def __init__(
         self, root_dir,
         subdir_only=None,
+        start_date=None,
         add_existing_files=True, monitor_new=True, max_file_queue_size=100, 
         num_processing_threads=4, processing_niceness=10, max_metadata_queue_size=5000, max_s3_queue_size=1000, num_s3_threads=2,
     ):
         assert(os.path.isdir(root_dir))
         self.root_dir = os.path.abspath(root_dir)
+        self.start_date = start_date
         self.subdir_only = subdir_only
         if subdir_only is not None and os.path.isdir(subdir_only):
             self.subdir_only = os.path.abspath(self.subdir_only)
@@ -384,7 +387,7 @@ class DirectoryMonitor():
         self.media_process_pool = multiprocessing.Pool(
             processes=self.num_processing_threads,
             initializer=media_processor_worker,
-            initargs=(self.queue, self.metadata_queue, processing_niceness, self.root_dir)
+            initargs=(self.queue, self.metadata_queue, processing_niceness, self.root_dir, self.start_date)
         )
 
         self.metadata_worker = multiprocessing.Process(target=metadata_processor_worker, args=(self.metadata_queue, self.s3_queue, self.path_queue))
@@ -453,12 +456,24 @@ class FileWatchdog(watchdog.events.PatternMatchingEventHandler):
         # return super().process(event)
 
 
-def media_processor_worker(file_queue, metadata_queue, niceness, root_dir):
+def media_processor_worker(file_queue, metadata_queue, niceness, root_dir, start_date):
     os.nice(niceness)
     while True:
         event = file_queue.get()
         if event is None:
             break
+        if start_date is not None:
+            fpath = event.src_path
+            # First try filename
+            fname = os.path.splitext(os.path.basename(fpath))[0]
+            try:
+                file_creation_time = datetime.datetime.strptime(fname, '%Y-%m-%d %H.%M.%S')
+            except ValueError:
+                # Fallback to file creation time
+                file_creation_time = datetime.datetime.fromtimestamp(os.path.getctime(fpath))
+            if file_creation_time < start_date:
+                continue
+
         metadata = process_media_file(event)
         metadata['fpath'] = os.path.abspath(metadata['fpath'])
         metadata['fpath_relative'] = os.path.relpath(metadata['fpath'], root_dir)
@@ -737,13 +752,35 @@ class DatabaseConnector():
 
 
 if __name__ == '__main__':
-    monitor_new = False
-    if len(sys.argv) >= 3:
-        subdir_only=sys.argv[2]
-    else:
-        subdir_only=None
-    dm = DirectoryMonitor(sys.argv[1], subdir_only=subdir_only, monitor_new=monitor_new)
-    if monitor_new:
+    parser = argparse.ArgumentParser(description='Command line tool to upload pictures')
+    parser.add_argument(
+        'root_directory',
+        help='Base directory to base key relative paths off of'
+    )
+    parser.add_argument(
+        'subdir_to_scan', default=None, nargs='?',
+        help='Only scan for new photos in this subdirectory',
+    )
+    parser.add_argument(
+        '--monitor_new', action='store_true', default=False,
+        help='Keep running, monitoring for new files',
+    )
+    parser.add_argument(
+        '--start_date', default=None,
+        help='Only process media newer than this date',
+        type=lambda s: datetime.datetime.strptime(s, '%Y-%m-%d'),
+    )
+    args = parser.parse_args()
+    assert(os.path.isdir(args.root_directory))
+    if args.subdir_to_scan:
+        assert(os.path.isdir(args.subdir_to_scan))
+
+    dm = DirectoryMonitor(
+        args.root_directory, subdir_only=args.subdir_to_scan, monitor_new=args.monitor_new,
+        start_date=args.start_date,
+    )
+
+    if args.monitor_new:
         try:
             while True:
                 time.sleep(1)
