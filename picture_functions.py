@@ -353,10 +353,12 @@ class DirectoryMonitor():
         self, root_dir,
         subdirs_only=[],
         start_date=None,
+        remove_after_upload=False,
         add_existing_files=True, monitor_new=True, max_file_queue_size=100, 
         num_processing_threads=4, processing_niceness=10, max_metadata_queue_size=5000, max_s3_queue_size=1000, num_s3_threads=2,
     ):
         assert(os.path.isdir(root_dir))
+        self.remove_after_upload = remove_after_upload
         self.root_dir = os.path.abspath(root_dir)
         self.start_date = start_date
         self.subdirs_only = subdirs_only
@@ -396,7 +398,7 @@ class DirectoryMonitor():
         self.metadata_worker = multiprocessing.Process(target=metadata_processor_worker, args=(self.metadata_queue, self.s3_queue, self.path_queue))
         self.metadata_worker.start()
 
-        self.path_worker = multiprocessing.Process(target=path_queue_worker, args=(self.path_queue,))
+        self.path_worker = multiprocessing.Process(target=path_queue_worker, args=(self.path_queue, self.remove_after_upload))
         self.path_worker.start()
 
         self.num_s3_threads = num_s3_threads
@@ -462,7 +464,9 @@ class FileWatchdog(watchdog.events.PatternMatchingEventHandler):
         self.queue = queue
 
     def process(self, event):
-        if path_is_image_or_video(event.src_path):
+        if os.path.basename(event.src_path)[0] == '.':
+            pass
+        elif path_is_image_or_video(event.src_path):
             self.queue.put(event)
         # return super().process(event)
 
@@ -495,43 +499,49 @@ def media_processor_worker(file_queue, metadata_queue, niceness, root_dir, start
         metadata_queue.put(metadata)
 
 
-def path_queue_worker(path_queue):
+def path_queue_worker(path_queue, remove_after_upload):
     while True:
         event = path_queue.get()
         if event is None:
             break
-        sha256_hash, fpath = event
+        sha256_hash, fpath, fpath_original = event
         
-        with DatabaseConnector() as conn:
-            existing = pd.read_sql_query(
-                '''SELECT id, sha256_hash FROM media WHERE sha256_hash=%s''', 
-                conn,
-                params=(psycopg2.Binary(sha256_hash),),
-            )
-            if len(existing) == 0:
-                path_queue.put(event)
-                continue
-            assert(len(existing) == 1)
-            media_id = int(existing.iloc[0]['id'])
+        try:
+            with DatabaseConnector() as conn:
+                existing = pd.read_sql_query(
+                    '''SELECT id, sha256_hash FROM media WHERE sha256_hash=%s''', 
+                    conn,
+                    params=(psycopg2.Binary(sha256_hash),),
+                )
+                if len(existing) == 0:
+                    path_queue.put(event)
+                    continue
+                assert(len(existing) == 1)
+                media_id = int(existing.iloc[0]['id'])
 
-            existing_paths = pd.read_sql_query(
-                '''SELECT key_id FROM keys WHERE media_id=%s AND key=%s''', 
-                conn,
-                params=(media_id, fpath),
-            )
-            if len(existing_paths) > 0:
-                continue
+                existing_paths = pd.read_sql_query(
+                    '''SELECT key_id FROM keys WHERE media_id=%s AND key=%s''', 
+                    conn,
+                    params=(media_id, fpath),
+                )
+                if len(existing_paths) > 0:
+                    continue
 
-            cursor = conn.cursor()
-            cursor.execute(
-                '''INSERT INTO keys (media_id, key)
-                VALUES(%s, %s)
-                ;''',
-                (
-                    media_id, fpath,
-                ),
-            )
-            conn.commit()
+                cursor = conn.cursor()
+                cursor.execute(
+                    '''INSERT INTO keys (media_id, key)
+                    VALUES(%s, %s)
+                    ;''',
+                    (
+                        media_id, fpath,
+                    ),
+                )
+                conn.commit()
+        except Exception:
+            raise
+        else:
+            if remove_after_upload:
+                os.remove(fpath_original)
 
 
 
@@ -694,7 +704,7 @@ def s3_upload_worker(s3_queue, path_queue):
             cursor.close()
 
         print('S3 upload complete:', os.path.basename(metadata['fpath']))
-        path_queue.put((metadata['sha256_hash'], metadata['fpath_relative']))
+        path_queue.put((metadata['sha256_hash'], metadata['fpath_relative'], metadata['fpath']))
 
 
 def combine_queues(main_queue, secondary_queue):
@@ -781,6 +791,10 @@ if __name__ == '__main__':
         help='Keep running, monitoring for new files',
     )
     parser.add_argument(
+        '--remove_after_upload', action='store_true', default=False,
+        help='Remove files from local disk after processing',
+    )
+    parser.add_argument(
         '--start_date', default=None,
         help='Only process media newer than this date',
         type=lambda s: datetime.datetime.strptime(s, '%Y-%m-%d'),
@@ -797,6 +811,7 @@ if __name__ == '__main__':
     dm = DirectoryMonitor(
         args.root_directory, subdirs_only=args.subdir_to_scan, monitor_new=args.monitor_new,
         start_date=args.start_date, num_processing_threads=args.num_processing_threads,
+        remove_after_upload=args.remove_after_upload,
     )
 
     if args.monitor_new:
