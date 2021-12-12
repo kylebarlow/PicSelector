@@ -351,7 +351,7 @@ def process_image(fpath, max_thumbnail_height=400, run_hashing=True):
 class DirectoryMonitor():
     def __init__(
         self, root_dir,
-        subdir_only=None,
+        subdirs_only=[],
         start_date=None,
         add_existing_files=True, monitor_new=True, max_file_queue_size=100, 
         num_processing_threads=4, processing_niceness=10, max_metadata_queue_size=5000, max_s3_queue_size=1000, num_s3_threads=2,
@@ -359,9 +359,9 @@ class DirectoryMonitor():
         assert(os.path.isdir(root_dir))
         self.root_dir = os.path.abspath(root_dir)
         self.start_date = start_date
-        self.subdir_only = subdir_only
-        if subdir_only is not None and os.path.isdir(subdir_only):
-            self.subdir_only = os.path.abspath(self.subdir_only)
+        self.subdirs_only = subdirs_only
+        if len(subdirs_only) > 0:
+            self.subdirs_only = [os.path.abspath(s) for s in subdirs_only if os.path.isdir(s)]
         self.add_existing_files = add_existing_files
         self.progress_queue = multiprocessing.Queue()
         self.queue = multiprocessing.Queue(maxsize=max_file_queue_size)
@@ -371,18 +371,21 @@ class DirectoryMonitor():
         self.path_queue = multiprocessing.Queue()
         self.num_processing_threads = num_processing_threads
         if monitor_new:
-            self.initialize_watchdog()
+            self.initialize_watchdogs()
             self.queue_combiner = multiprocessing.Process(target=combine_queues, args=(self.queue, self.watchdog_queue))
             self.queue_combiner.start()
         else:
             assert(add_existing_files)
 
+        self.initial_walkers = []
         if self.add_existing_files:
-            if self.subdir_only is not None:
-                self.initial_walker = multiprocessing.Process(target=walk_dir, args=(self.subdir_only, self.queue))
+            if len(self.subdirs_only) > 0:
+                for subdir in self.subdirs_only:
+                    self.initial_walkers.append(multiprocessing.Process(target=walk_dir, args=(subdir, self.queue)))
             else:
-                self.initial_walker = multiprocessing.Process(target=walk_dir, args=(self.root_dir, self.queue))
-            self.initial_walker.start()
+                self.initial_walkers.append(multiprocessing.Process(target=walk_dir, args=(self.root_dir, self.queue)))
+            for iw in self.initial_walkers:
+                iw.start()
 
         self.media_process_pool = multiprocessing.Pool(
             processes=self.num_processing_threads,
@@ -407,7 +410,8 @@ class DirectoryMonitor():
             self.exit_when_initial_processing_done()
 
     def exit_when_initial_processing_done(self):
-        self.initial_walker.join()
+        for iw in self.initial_walkers:
+            iw.join()
         number_times_queue_0 = 0
         while number_times_queue_0 < 5:
             time.sleep(0.2)
@@ -430,15 +434,26 @@ class DirectoryMonitor():
         self.path_queue.put(None)
         self.path_worker.join()
 
-    def initialize_watchdog(self):
-        self.event_handler = FileWatchdog(self.watchdog_queue)
-        self.observer = watchdog.observers.Observer()
-        if self.subdir_only is not None:
-            root_dir = self.subdir_only
-        else:
+    def initialize_watchdogs(self):
+        self.event_handlers = []
+        self.observers = []
+        if len(self.subdirs_only) == 0:
+            event_handler = FileWatchdog(self.watchdog_queue)
+            observer = watchdog.observers.Observer()
             root_dir = self.root_dir
-        self.observer.schedule(self.event_handler, root_dir, recursive=True)
-        self.observer.start()
+            observer.schedule(event_handler, root_dir, recursive=True)
+            observer.start()
+            self.event_handlers.append(event_handler)
+            self.observers.append(observer)
+        else:
+            for subdir in self.subdirs_only:
+                root_dir = subdir
+                event_handler = FileWatchdog(self.watchdog_queue)
+                observer = watchdog.observers.Observer()
+                observer.schedule(event_handler, root_dir, recursive=True)
+                observer.start()
+                self.event_handlers.append(event_handler)
+                self.observers.append(observer)
 
 
 class FileWatchdog(watchdog.events.PatternMatchingEventHandler):
@@ -758,8 +773,8 @@ if __name__ == '__main__':
         help='Base directory to base key relative paths off of'
     )
     parser.add_argument(
-        'subdir_to_scan', default=None, nargs='?',
-        help='Only scan for new photos in this subdirectory',
+        'subdir_to_scan', default=[], nargs='*',
+        help='Only scan for new photos in these subdirectories',
     )
     parser.add_argument(
         '--monitor_new', action='store_true', default=False,
@@ -770,14 +785,18 @@ if __name__ == '__main__':
         help='Only process media newer than this date',
         type=lambda s: datetime.datetime.strptime(s, '%Y-%m-%d'),
     )
+    parser.add_argument(
+        '--num_processing_threads', default=4, type=int,
+    )
     args = parser.parse_args()
     assert(os.path.isdir(args.root_directory))
-    if args.subdir_to_scan:
-        assert(os.path.isdir(args.subdir_to_scan))
+    if len(args.subdir_to_scan) > 0:
+        for subdir_to_scan in args.subdir_to_scan: 
+            assert(os.path.isdir(subdir_to_scan))
 
     dm = DirectoryMonitor(
-        args.root_directory, subdir_only=args.subdir_to_scan, monitor_new=args.monitor_new,
-        start_date=args.start_date,
+        args.root_directory, subdirs_only=args.subdir_to_scan, monitor_new=args.monitor_new,
+        start_date=args.start_date, num_processing_threads=args.num_processing_threads,
     )
 
     if args.monitor_new:
