@@ -27,6 +27,9 @@ from sshtunnel import SSHTunnelForwarder
 import psycopg2
 import config
 
+from timezonefinder import TimezoneFinder
+import pytz
+
 import boto3
 import botocore
 import botocore.exceptions
@@ -73,8 +76,13 @@ def process_video(fpath, max_thumbnail_height=400, max_thumbnail_samples=5000):
     sha_hash = file_hash.digest()
 
     date_time = None
+    zulu_time = False
+    original_tzinfo = None
     if 'creation_time' in info:
         date_time = dateutil_parser.parse((info['creation_time'][0]))
+        if isinstance(info['creation_time'][0], str) and len(info['creation_time'][0]) > 0 and info['creation_time'][0][-1].upper() == 'Z':
+            zulu_time = True
+            original_tzinfo = date_time.tzinfo
 
     duration = None
     if 'duration' in info:
@@ -100,6 +108,12 @@ def process_video(fpath, max_thumbnail_height=400, max_thumbnail_samples=5000):
                 lon = float(loc_str.split('-')[1])
         except Exception:
             pass
+
+    if date_time and lat and lon and zulu_time:
+        tf = TimezoneFinder()
+        tz = pytz.timezone(tf.timezone_at(lng=lon, lat=lat))
+        date_time = date_time.astimezone(tz).replace(tzinfo=original_tzinfo)
+        print('Adjusted time', date_time)
 
     filesize = os.path.getsize(fpath)
 
