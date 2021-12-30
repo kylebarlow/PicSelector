@@ -24,8 +24,8 @@
     <h2>{{ year }}-{{ month }}{{ page_header_text }}</h2>
     {% for thumbnail in thumbnails %}
     {% if thumbnail.media_type == 0 %}
-    <div class="gallery" onclick="openPhotoSwipe({{ thumbnail.photoswipe_index }})">
-        <img src="{{ thumbnail.url }}" width="{{ thumbnail.width }}" height="{{ thumbnail.height }}">
+    <div class="gallery">
+        <img src="{{ thumbnail.url }}" width="{{ thumbnail.width }}" height="{{ thumbnail.height }}" onclick="openPhotoSwipe({{ thumbnail.photoswipe_index }})">
     {% else %}
     <div class="gallery">
         <video controls poster="{{ thumbnail.url }}" width="{{ thumbnail.width }}" height="{{ thumbnail.height }}">
@@ -33,6 +33,10 @@
         </video>
     {% endif %}
       <div class="desc">{{ thumbnail.formatted_date }}</div>
+      <div class="vote-icons">
+          <i class="far fa-thumbs-down fa-4x"></i>
+          <i class="far fa-thumbs-up fa-4x"></i>
+      </div>
     </div>
     {% endfor %}
     {% if next_page_url != '' %}

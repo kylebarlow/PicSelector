@@ -14,7 +14,7 @@ div.gallery:hover {
 }
 
 div.gallery img {
-  max-width:1200px;
+  max-width:90vw;
   max-height:400px;
   width: auto;
   height: auto;
@@ -23,4 +23,10 @@ div.gallery img {
 div.desc {
   padding: 15px;
   text-align: center;
+}
+
+div.vote-icons {
+  padding: 15px;
+  display: flex;
+  justify-content: space-around;
 }
