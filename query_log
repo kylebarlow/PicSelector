@@ -1,0 +1,13 @@
+2021-12-30
+Update kyle phone video timestamps
+
+UPDATE media
+SET creation_time = creation_time - time '08:00:00'
+WHERE
+media_type=1 AND creation_time >= '2021-10-27' AND s3_key LIKE 'camera_uploads/%'
+
+Same for malia phone
+UPDATE media
+SET creation_time = creation_time - time '08:00:00'
+WHERE
+media_type=1 AND creation_time >= '2021-01-01' AND s3_key LIKE 'malia_camera_uploads/%'
