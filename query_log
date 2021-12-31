@@ -11,3 +11,15 @@ UPDATE media
 SET creation_time = creation_time - time '08:00:00'
 WHERE
 media_type=1 AND creation_time >= '2021-01-01' AND s3_key LIKE 'malia_camera_uploads/%'
+
+Votes table
+create table votes
+(
+	user_id int
+		constraint votes_users_id_fk
+			references users,
+	media_id int
+		constraint votes_media_id_fk
+			references media,
+	"like" bool default NULL
+);

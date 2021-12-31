@@ -34,8 +34,16 @@
     {% endif %}
       <div class="desc">{{ thumbnail.formatted_date }}</div>
       <div class="vote-icons">
-          <i class="far fa-thumbs-down fa-4x"></i>
-          <i class="far fa-thumbs-up fa-4x"></i>
+          {% if thumbnail.like == True %}
+            <i class="far fa-trash-alt fa-4x"></i>
+            <i class="fas fa-star fa-4x"></i>
+          {% elif thumbnail.like == False %}
+            <i class="fas fa-trash-alt fa-4x"></i>
+            <i class="far fa-star fa-4x"></i>
+          {% else %}
+            <i class="far fa-trash-alt fa-4x"></i>
+            <i class="far fa-star fa-4x"></i>
+          {% endif %}
       </div>
     </div>
     {% endfor %}

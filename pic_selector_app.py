@@ -4,8 +4,8 @@ import calendar
 import datetime
 
 import flask
-from flask import render_template_string
-from flask_user import login_required, UserManager, roles_required
+from flask import request, jsonify
+from flask_user import login_required, UserManager, roles_required, current_user
 
 
 import pandas as pd
@@ -73,18 +73,22 @@ def month_gallery_page(year, month, page, column_width=400, items_per_page=50):
     this_month_start = datetime.datetime(year, month, 1)
     next_month_start = (this_month_start + datetime.timedelta(days=calendar.monthrange(year, month)[1] + 5)).replace(day=1)
     prev_month_start = (this_month_start - datetime.timedelta(days=5)).replace(day=1)
+    current_user_id = current_user.id
 
     media = pd.read_sql_query(
         '''
-        SELECT media.creation_time, media.media_type, media.height, media.width, media.s3_key, thumbnail.key as thumbnail_key, thumbnail.width as thumbnail_width, thumbnail.height as thumbnail_height from media
+        SELECT media.creation_time, media.media_type, media.height, media.width, media.s3_key, thumbnail.key as thumbnail_key, thumbnail.width as thumbnail_width, thumbnail.height as thumbnail_height, votes.like
+        from media
         JOIN thumbnail ON thumbnail.media_id=media.id
+        LEFT JOIN votes on media.id = votes.media_id
         WHERE creation_time >= %s
         AND creation_time < %s
+        AND (votes.user_id=%s OR votes.user_id IS NULL)
         ORDER BY creation_time ASC
         ''',
         db.engine,
         params=(
-            this_month_start, next_month_start,
+            this_month_start, next_month_start, current_user_id,
         ),
     )
 
@@ -150,6 +154,7 @@ def month_gallery_page(year, month, page, column_width=400, items_per_page=50):
             'formatted_date': row['creation_time'].strftime("%b %d, %I:%M:%S %p"),
             'comma': comma,
             'photoswipe_index': photoswipe_i,
+            'like': row['like'],
         }
         if row['media_type'] == 1:
             fname, extension = os.path.splitext(row['s3_key'])
