@@ -11,7 +11,6 @@ from flask_user import login_required, UserManager, roles_required, current_user
 import pandas as pd
 # import psycopg2
 
-from picture_functions import DatabaseConnector
 import config
 
 import boto3
@@ -19,6 +18,7 @@ import boto3
 import botocore.exceptions
 
 from sql_alchemy_classes import *
+import sqlalchemy
 
 # Create all database tables
 # db.create_all()
@@ -39,6 +39,48 @@ def home_page():
     year_links = [flask.url_for('year_gallery', year=year) for year in years]
     year_tuples = [(x, y) for x, y in zip(years, year_links)]
     return flask.render_template('home.html', year_tuples=year_tuples)
+
+@login_required
+@app.route('/_vote', methods = ['POST'])
+def vote():
+    media_id = request.form.get('mediaid', -1, type=int)
+    vote_value = request.form.get('votevalue', None, type=int)
+    assert(media_id >= 0)
+
+    current_vote = pd.read_sql_query(
+        '''
+        SELECT votes.vote_value, media.id as mediaid
+        from media
+        LEFT JOIN votes on media.id = votes.media_id
+        WHERE media.id=%s
+        AND (votes.user_id=%s OR votes.user_id IS NULL)        ''',
+        db.engine,
+        params=(
+            media_id, current_user.id,
+        ),
+    )
+    assert(len(current_vote) == 1)
+    current_vote = current_vote.iloc[0]['vote_value']
+
+    if vote_value == 1:
+        if current_vote == 1:
+            new_vote_value = 0
+        else:
+            new_vote_value = 1
+    elif vote_value == -1:
+        if current_vote == -1:
+            new_vote_value = 0
+        else:
+            new_vote_value = -1
+    else:
+        raise Exception()
+
+    if pd.isna(current_vote):
+        query = "INSERT INTO votes (vote_value, user_id, media_id) VALUES (%d, %d, %d)" % (int(new_vote_value), current_user.id, int(media_id))
+    else:    
+        query = "UPDATE votes SET vote_value = %d WHERE media_id = %d AND user_id = %d" % (int(new_vote_value), int(media_id), current_user.id)
+    db.engine.execute(sqlalchemy.text(query))
+    return jsonify(votevalue=new_vote_value, mediaid=media_id)
 
 @app.route('/gallery/<int:year>')
 @roles_required('Admin')
@@ -77,7 +119,7 @@ def month_gallery_page(year, month, page, column_width=400, items_per_page=50):
 
     media = pd.read_sql_query(
         '''
-        SELECT media.creation_time, media.media_type, media.height, media.width, media.s3_key, thumbnail.key as thumbnail_key, thumbnail.width as thumbnail_width, thumbnail.height as thumbnail_height, votes.like
+        SELECT media.creation_time, media.media_type, media.height, media.width, media.s3_key, thumbnail.key as thumbnail_key, thumbnail.width as thumbnail_width, thumbnail.height as thumbnail_height, votes.vote_value, media.id as mediaid
         from media
         JOIN thumbnail ON thumbnail.media_id=media.id
         LEFT JOIN votes on media.id = votes.media_id
@@ -154,7 +196,8 @@ def month_gallery_page(year, month, page, column_width=400, items_per_page=50):
             'formatted_date': row['creation_time'].strftime("%b %d, %I:%M:%S %p"),
             'comma': comma,
             'photoswipe_index': photoswipe_i,
-            'like': row['like'],
+            'vote_value': row['vote_value'],
+            'mediaid': row['mediaid'],
         }
         if row['media_type'] == 1:
             fname, extension = os.path.splitext(row['s3_key'])
