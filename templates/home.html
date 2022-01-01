@@ -1,7 +1,9 @@
 {% extends "flask_user_layout.html" %}
 {% block content %}
+{% if current_user.is_authenticated and current_user.has_roles(['Admin']) %}
 <h2>Pictures</h2>
 {% for year, year_link in year_tuples %}
 <a href="{{ year_link }}">{{ year }}</a>
 {% endfor %}
+{% endif %}
 {% endblock %}

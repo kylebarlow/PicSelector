@@ -42,6 +42,7 @@ def home_page():
     return flask.render_template('home.html', year_tuples=year_tuples)
 
 @login_required
+@roles_required('Admin')
 @app.route('/_vote', methods = ['POST'])
 def vote():
     media_id = request.form.get('mediaid', -1, type=int)

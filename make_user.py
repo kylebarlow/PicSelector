@@ -18,7 +18,7 @@ import botocore.exceptions
 from sql_alchemy_classes import *
 
 # Create all database tables
-db.create_all()
+# db.create_all()
 
 # Setup Flask-User and specify the User data-model
 user_manager = UserManager(app, db, User)
@@ -27,7 +27,7 @@ user_manager = UserManager(app, db, User)
 # db.session.add(admin_role)
 # db.session.commit()
 
-# guest_role = Role(name='Guest')
+# guest_role = Role(name='family')
 # db.session.add(guest_role)
 # db.session.commit()
 
@@ -52,6 +52,19 @@ user_manager = UserManager(app, db, User)
 
 # admin_role = Role.query.filter_by(id=1).first()
 # user.roles = [admin_role]
+
+# db.session.add(user)
+# db.session.commit()
+
+# user = User()
+# user.username = 'family'
+# user.first_name = 'Family'
+# user.last_name = 'User'
+# user.email = 'family@barlo.ws'
+# user.password = user_manager.hash_password('ohana')
+
+# guest_role = Role.query.filter_by(id=2).first()
+# user.roles = [guest_role]
 
 # db.session.add(user)
 # db.session.commit()
