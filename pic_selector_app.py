@@ -28,6 +28,7 @@ user_manager = UserManager(app, db, User)
 
 # The Home page is accessible to anyone
 @app.route('/')
+@login_required
 def home_page():
     years = pd.read_sql_query('''
         SELECT DISTINCT EXTRACT(YEAR FROM creation_time) as year
