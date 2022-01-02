@@ -7,7 +7,7 @@ import flask
 from flask import request, jsonify
 from flask_user import login_required, UserManager, roles_required, current_user
 
-
+import numpy as np
 import pandas as pd
 # import psycopg2
 
@@ -30,16 +30,60 @@ user_manager = UserManager(app, db, User)
 @app.route('/')
 @login_required
 def home_page():
-    years = pd.read_sql_query('''
-        SELECT DISTINCT EXTRACT(YEAR FROM creation_time) as year
-        FROM media
-        WHERE creation_time >= '2000-01-01 01:00:00'
-        ORDER BY year
-    ''', db.engine)['year'].values
-    years = [str(int(year)) for year in years]
+    session = boto3.session.Session(
+        aws_access_key_id=config.access_key,
+        aws_secret_access_key=config.secret_key,
+        profile_name=None,
+    )
+    s3_client = session.client(
+        "s3",
+        config=config.boto_config,
+        endpoint_url=config.s3_endpoint_url,
+    )
+
+    df = pd.read_sql_query('''
+        SELECT EXTRACT(YEAR FROM creation_time) as year, creation_time, thumbnail.key as thumbnail_key, thumbnail.width as thumbnail_width, thumbnail.height as thumbnail_height, SUM(votes.vote_value) AS sum_votes, media.id as mediaid
+        from media
+        JOIN thumbnail ON thumbnail.media_id=media.id
+        LEFT JOIN votes on media.id = votes.media_id
+        WHERE media_type = 0 AND EXTRACT(YEAR FROM creation_time) IS NOT NULL
+        GROUP BY mediaid, thumbnail_key, thumbnail_width, thumbnail_height
+    ''', db.engine)
+    df['randcol'] = np.random.random(size=df.shape[0])
+    df = df.sort_values(['year', 'randcol'])
+    df['sum_votes'] = df['sum_votes'].fillna(0)
+    df_years = df.loc[(df['sum_votes'] >= 0) & (df['year'] >= 2006)].drop_duplicates('year')
+
+    years = [str(int(year)) for year in df_years['year']]
     year_links = [flask.url_for('year_gallery', year=year) for year in years]
-    year_tuples = [(x, y) for x, y in zip(years, year_links)]
-    return flask.render_template('home.html', year_tuples=year_tuples)
+    year_thumbnails = [
+        s3_client.generate_presigned_url(
+            ClientMethod='get_object',
+            Params={
+                'Bucket': config.s3_bucket_name,
+                'Key': thumbnail_key,
+            },
+            ExpiresIn=60*60,  # One hour in seconds
+        ) for thumbnail_key in df_years['thumbnail_key']
+    ]
+    year_tuples = [(x, y, z, w, h) for x, y, z, w, h in zip(years, year_links, year_thumbnails, df_years['thumbnail_width'].values, df_years['thumbnail_height'].values)]
+
+    df_fav_years = df.loc[df['sum_votes'] > 0].drop_duplicates('year')
+    fav_years = [str(int(year)) for year in df_fav_years['year']]
+    fav_year_links = [flask.url_for('year_gallery', year=year) for year in fav_years]
+    fav_year_thumbnails = [
+        s3_client.generate_presigned_url(
+            ClientMethod='get_object',
+            Params={
+                'Bucket': config.s3_bucket_name,
+                'Key': thumbnail_key,
+            },
+            ExpiresIn=60*60,  # One hour in seconds
+        ) for thumbnail_key in df_fav_years['thumbnail_key']
+    ]
+    fav_year_tuples = [(x, y, z) for x, y, z in zip(fav_years, fav_year_links, fav_year_thumbnails)]
+    fav_year_tuples = [(x, y, z, w, h) for x, y, z, w, h in zip(fav_years, fav_year_links, fav_year_thumbnails, df_fav_years['thumbnail_width'].values, df_fav_years['thumbnail_height'].values)]
+    return flask.render_template('home.html', year_tuples=year_tuples, fav_year_tuples=fav_year_tuples)
 
 @login_required
 @roles_required('Admin')

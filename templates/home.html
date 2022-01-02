@@ -1,9 +1,18 @@
 {% extends "flask_user_layout.html" %}
 {% block content %}
 {% if current_user.is_authenticated and current_user.has_roles(['Admin']) %}
-<h2>Pictures</h2>
-{% for year, year_link in year_tuples %}
+<h2>All Pictures</h2>
+{% for year, year_link, year_thumbnail_url, thumbnail_width, thumbnail_height in year_tuples %}
 <a href="{{ year_link }}">{{ year }}</a>
 {% endfor %}
 {% endif %}
+<h2>Favorite Pictures</h2>
+{% for year, year_link, year_thumbnail_url, thumbnail_width, thumbnail_height in fav_year_tuples %}
+<div class="gallery">
+    <a href="{{ year_link }}">
+        <img src="{{ year_thumbnail_url }}" width="{{ thumbnail_width }}" height="{{ thumbnail_height }}">
+        <div class="desc">{{ year }}</div>
+    </a>
+  </div>
+{% endfor %}
 {% endblock %}
