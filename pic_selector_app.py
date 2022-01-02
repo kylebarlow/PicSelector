@@ -30,6 +30,28 @@ user_manager = UserManager(app, db, User)
 @app.route('/')
 @login_required
 def home_page():
+    df = pd.read_sql_query('''
+        SELECT EXTRACT(YEAR FROM creation_time) as year, creation_time, thumbnail.key as thumbnail_key, thumbnail.width as thumbnail_width, thumbnail.height as thumbnail_height, SUM(votes.vote_value) AS sum_votes, media.id as mediaid
+        from media
+        JOIN thumbnail ON thumbnail.media_id=media.id
+        LEFT JOIN votes on media.id = votes.media_id
+        WHERE media_type = 0 AND EXTRACT(YEAR FROM creation_time) IS NOT NULL
+        GROUP BY mediaid, thumbnail_key, thumbnail_width, thumbnail_height
+    ''', db.engine)
+    df = df.loc[~df['year'].isna()]
+    df['randcol'] = np.random.random(size=df.shape[0])
+    df = df.sort_values(['year', 'randcol'])
+    df['sum_votes'] = df['sum_votes'].fillna(0)
+    df['year_str'] = df['year'].astype(int).astype(str)
+    df['year_link'] = df['year'].apply(lambda year: flask.url_for('year_gallery', year=year))
+    df_years = df.loc[(df['sum_votes'] >= 0) & (df['year'] >= 2006)].drop_duplicates('year')
+    df_years = generate_signed_urls_helper(df_years)
+    df_fav_years = df.loc[df['sum_votes'] > 0].drop_duplicates('year')
+    df_fav_years = generate_signed_urls_helper(df_fav_years)
+    return flask.render_template('home.html', all_year_df=df_years, fav_year_df=df_fav_years)
+
+
+def generate_signed_urls_helper(df, thumbnail_key_col = 'thumbnail_key', url_col='thumbnail_url'):
     session = boto3.session.Session(
         aws_access_key_id=config.access_key,
         aws_secret_access_key=config.secret_key,
@@ -40,23 +62,7 @@ def home_page():
         config=config.boto_config,
         endpoint_url=config.s3_endpoint_url,
     )
-
-    df = pd.read_sql_query('''
-        SELECT EXTRACT(YEAR FROM creation_time) as year, creation_time, thumbnail.key as thumbnail_key, thumbnail.width as thumbnail_width, thumbnail.height as thumbnail_height, SUM(votes.vote_value) AS sum_votes, media.id as mediaid
-        from media
-        JOIN thumbnail ON thumbnail.media_id=media.id
-        LEFT JOIN votes on media.id = votes.media_id
-        WHERE media_type = 0 AND EXTRACT(YEAR FROM creation_time) IS NOT NULL
-        GROUP BY mediaid, thumbnail_key, thumbnail_width, thumbnail_height
-    ''', db.engine)
-    df['randcol'] = np.random.random(size=df.shape[0])
-    df = df.sort_values(['year', 'randcol'])
-    df['sum_votes'] = df['sum_votes'].fillna(0)
-    df_years = df.loc[(df['sum_votes'] >= 0) & (df['year'] >= 2006)].drop_duplicates('year')
-
-    years = [str(int(year)) for year in df_years['year']]
-    year_links = [flask.url_for('year_gallery', year=year) for year in years]
-    year_thumbnails = [
+    df[url_col] = df[thumbnail_key_col].apply(lambda thumbnail_key:
         s3_client.generate_presigned_url(
             ClientMethod='get_object',
             Params={
@@ -64,26 +70,10 @@ def home_page():
                 'Key': thumbnail_key,
             },
             ExpiresIn=60*60,  # One hour in seconds
-        ) for thumbnail_key in df_years['thumbnail_key']
-    ]
-    year_tuples = [(x, y, z, w, h) for x, y, z, w, h in zip(years, year_links, year_thumbnails, df_years['thumbnail_width'].values, df_years['thumbnail_height'].values)]
+        )
+    )
+    return df
 
-    df_fav_years = df.loc[df['sum_votes'] > 0].drop_duplicates('year')
-    fav_years = [str(int(year)) for year in df_fav_years['year']]
-    fav_year_links = [flask.url_for('year_gallery', year=year) for year in fav_years]
-    fav_year_thumbnails = [
-        s3_client.generate_presigned_url(
-            ClientMethod='get_object',
-            Params={
-                'Bucket': config.s3_bucket_name,
-                'Key': thumbnail_key,
-            },
-            ExpiresIn=60*60,  # One hour in seconds
-        ) for thumbnail_key in df_fav_years['thumbnail_key']
-    ]
-    fav_year_tuples = [(x, y, z) for x, y, z in zip(fav_years, fav_year_links, fav_year_thumbnails)]
-    fav_year_tuples = [(x, y, z, w, h) for x, y, z, w, h in zip(fav_years, fav_year_links, fav_year_thumbnails, df_fav_years['thumbnail_width'].values, df_fav_years['thumbnail_height'].values)]
-    return flask.render_template('home.html', year_tuples=year_tuples, fav_year_tuples=fav_year_tuples)
 
 @login_required
 @roles_required('Admin')
