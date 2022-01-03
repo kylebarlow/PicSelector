@@ -9,6 +9,7 @@ from flask_user import login_required, UserManager, roles_required, current_user
 
 import numpy as np
 import pandas as pd
+from sqlalchemy.orm import deferred
 # import psycopg2
 
 import config
@@ -40,18 +41,19 @@ def home_page():
     ''', db.engine)
     df = df.loc[~df['year'].isna()]
     df['randcol'] = np.random.random(size=df.shape[0])
-    df = df.sort_values(['year', 'randcol'])
     df['sum_votes'] = df['sum_votes'].fillna(0)
+    df = df.sort_values(['year', 'sum_votes', 'randcol'], ascending=[True, False, True])
     df['year_str'] = df['year'].astype(int).astype(str)
-    df['year_link'] = df['year'].apply(lambda year: flask.url_for('year_gallery', year=year))
     df_years = df.loc[(df['sum_votes'] >= 0) & (df['year'] >= 2006)].drop_duplicates('year')
+    df_years['year_link'] = df_years['year'].apply(lambda year: flask.url_for('year_gallery', year=year))
     df_years = generate_signed_urls_helper(df_years)
     df_fav_years = df.loc[df['sum_votes'] > 0].drop_duplicates('year')
+    df_fav_years['year_link'] = df_fav_years['year'].apply(lambda year: flask.url_for('fav_year_gallery', year=year))
     df_fav_years = generate_signed_urls_helper(df_fav_years)
     return flask.render_template('home.html', all_year_df=df_years, fav_year_df=df_fav_years)
 
 
-def generate_signed_urls_helper(df, thumbnail_key_col = 'thumbnail_key', url_col='thumbnail_url'):
+def generate_signed_urls_helper(df, s3_key_col = 'thumbnail_key', url_col='thumbnail_url'):
     session = boto3.session.Session(
         aws_access_key_id=config.access_key,
         aws_secret_access_key=config.secret_key,
@@ -62,12 +64,12 @@ def generate_signed_urls_helper(df, thumbnail_key_col = 'thumbnail_key', url_col
         config=config.boto_config,
         endpoint_url=config.s3_endpoint_url,
     )
-    df[url_col] = df[thumbnail_key_col].apply(lambda thumbnail_key:
+    df[url_col] = df[s3_key_col].apply(lambda s3_key:
         s3_client.generate_presigned_url(
             ClientMethod='get_object',
             Params={
                 'Bucket': config.s3_bucket_name,
-                'Key': thumbnail_key,
+                'Key': s3_key,
             },
             ExpiresIn=60*60,  # One hour in seconds
         )
@@ -122,17 +124,45 @@ def vote():
 @roles_required('Admin')
 @login_required
 def year_gallery(year):
-    months = pd.read_sql_query('''
-        SELECT DISTINCT EXTRACT(MONTH FROM creation_time) as month
-        FROM media
-        WHERE creation_time >= '%d-01-01 00:00:00'
+    return render_year(year, favs_only=False)
+
+
+@app.route('/favs/<int:year>')
+@login_required
+def fav_year_gallery(year):
+    return render_year(year, favs_only=True)
+
+def render_year(year, favs_only=True):
+    df = get_months_df(year, favs_only=favs_only)
+    return flask.render_template('year.html', months_df=df)
+
+
+def get_months_df(year, favs_only=True):
+    df = pd.read_sql_query('''
+        SELECT EXTRACT(MONTH FROM creation_time) as month, creation_time, thumbnail.key as thumbnail_key, thumbnail.width as thumbnail_width, thumbnail.height as thumbnail_height, SUM(votes.vote_value) AS sum_votes, media.id as mediaid
+        from media
+        JOIN thumbnail ON thumbnail.media_id=media.id
+        LEFT JOIN votes on media.id = votes.media_id
+        WHERE media_type = 0 AND EXTRACT(MONTH FROM creation_time) IS NOT NULL
+        AND creation_time >= '%d-01-01 00:00:00'
         AND creation_time <= '%d-12-31 23:59:59'
-        ORDER BY month
-    ''' % (int(year), int(year)), db.engine)['month'].values
-    months = [str(int(month)) for month in months]
-    month_links = [flask.url_for('month_gallery', year=year, month=month) for month in months]
-    month_tuples = [(x, y) for x, y in zip(months, month_links)]
-    return flask.render_template('year.html', month_tuples=month_tuples)
+        GROUP BY mediaid, thumbnail_key, thumbnail_width, thumbnail_height
+    ''' % (int(year), int(year)), db.engine)
+    df = df.loc[~df['month'].isna()]
+    df['randcol'] = np.random.random(size=df.shape[0])
+    df['sum_votes'] = df['sum_votes'].fillna(0)
+    df = df.sort_values(['month', 'sum_votes', 'randcol'], ascending=[True, False, True])
+    df['month_str'] = df['month'].astype(int).apply(lambda x: calendar.month_name[x])
+    if favs_only:
+        month_route = 'fav_month_gallery'
+        df = df.loc[df['sum_votes'] > 0]
+    else:
+        month_route = 'month_gallery'
+    df = df.drop_duplicates('month')
+    df['month_link'] = df['month'].apply(lambda month: flask.url_for(month_route, year=year, month=month))
+    df = generate_signed_urls_helper(df)
+    return df
+
 
 @app.route('/robots.txt')
 def robots():
@@ -144,42 +174,78 @@ def robots():
 def month_gallery(year, month):
     return month_gallery_page(year, month, 1)
 
+
+@app.route('/favs/<int:year>/<int:month>')
+@login_required
+def fav_month_gallery(year, month):
+    return fav_month_gallery_page(year, month, 1)
+
+
 @app.route('/gallery/<int:year>/<int:month>/<int:page>')
 @roles_required('Admin')
 @login_required
-def month_gallery_page(year, month, page, column_width=400, items_per_page=50):
+def month_gallery_page(year, month, page):
+    return render_month(year, month, page, favs_only=False)
+
+
+@app.route('/favs/<int:year>/<int:month>/<int:page>')
+@login_required
+def fav_month_gallery_page(year, month, page):
+    return render_month(year, month, page, favs_only=True)
+
+
+def get_days_df(year, month, favs_only=True):
     this_month_start = datetime.datetime(year, month, 1)
     next_month_start = (this_month_start + datetime.timedelta(days=calendar.monthrange(year, month)[1] + 5)).replace(day=1)
-    prev_month_start = (this_month_start - datetime.timedelta(days=5)).replace(day=1)
     current_user_id = current_user.id
 
-    media = pd.read_sql_query(
+    df = pd.read_sql_query(
         '''
-        SELECT media.creation_time, media.media_type, media.height, media.width, media.s3_key, thumbnail.key as thumbnail_key, thumbnail.width as thumbnail_width, thumbnail.height as thumbnail_height, votes.vote_value, media.id as mediaid
+        SELECT media.creation_time, media.media_type, media.height, media.width, media.s3_key, thumbnail.key as thumbnail_key, thumbnail.width as thumbnail_width, thumbnail.height as thumbnail_height, votes.vote_value, media.id as mediaid, q2.sum_all_votes, votes.user_id as votes_user_id
         from media
         JOIN thumbnail ON thumbnail.media_id=media.id
         LEFT JOIN votes on media.id = votes.media_id
+        LEFT JOIN (
+            SELECT media.id AS q2_mediaid, SUM(votes.vote_value) AS sum_all_votes
+            from media
+            LEFT JOIN votes on media.id = votes.media_id
+            AND creation_time >= %s
+            AND creation_time < %s
+            GROUP BY q2_mediaid, creation_time
+        ) q2 ON q2.q2_mediaid=media.id
         WHERE creation_time >= %s
         AND creation_time < %s
-        AND (votes.user_id=%s OR votes.user_id IS NULL)
         ORDER BY creation_time ASC
         ''',
         db.engine,
         params=(
-            this_month_start, next_month_start, current_user_id,
+            this_month_start, next_month_start, this_month_start, next_month_start,
         ),
     )
+    df['vote_matches_my_user_id'] = 0
+    df.loc[df['votes_user_id'] == current_user_id, 'vote_matches_my_user_id'] = 1
+    df = df.sort_values(['creation_time', 'vote_matches_my_user_id'], ascending=[True, False])
+    df = df.drop_duplicates('mediaid')
+    df['vote_value'] = df['vote_value'].fillna(0)
+    df.loc[(df['vote_matches_my_user_id'] == 0) & (df['vote_value'] != 0), 'vote_value'] = 0
+    df['sum_all_votes'] = df['sum_all_votes'].fillna(0)
+    if favs_only:
+        df = df.loc[df['sum_all_votes'] > 0]
 
-    session = boto3.session.Session(
-        aws_access_key_id=config.access_key,
-        aws_secret_access_key=config.secret_key,
-        profile_name=None,
-    )
-    s3_client = session.client(
-        "s3",
-        config=config.boto_config,
-        endpoint_url=config.s3_endpoint_url,
-    )
+    return df
+
+
+def render_month(year, month, page, column_width=400, items_per_page=50, favs_only=True):
+    if favs_only:
+        month_route = 'fav_month_gallery_page'
+        items_per_page = items_per_page * 2
+    else:
+        month_route = 'month_gallery_page'
+
+    this_month_start = datetime.datetime(year, month, 1)
+    next_month_start = (this_month_start + datetime.timedelta(days=calendar.monthrange(year, month)[1] + 5)).replace(day=1)
+    prev_month_start = (this_month_start - datetime.timedelta(days=5)).replace(day=1)
+    media = get_days_df(year, month, favs_only=favs_only)
 
     thumbnails = []
     photoswipe_i = 0
@@ -189,13 +255,17 @@ def month_gallery_page(year, month, page, column_width=400, items_per_page=50):
         page_header_text = ' - Page %d of %d' % (page, math.ceil(len(media)/items_per_page))
     else:
         page_header_text = ''
+    
     if len(media) > items_per_page and page < math.ceil(len(media)/items_per_page):
-        next_page_url = flask.url_for('month_gallery_page', year=year, month=month, page=page + 1)
+        next_page_url = flask.url_for(month_route, year=year, month=month, page=page + 1)
     else:
         next_page_url = ''
 
     starting_i = (page - 1) * items_per_page
     ending_i = page * items_per_page + 1
+
+    media = generate_signed_urls_helper(media, s3_key_col='thumbnail_key', url_col='url')
+    media = generate_signed_urls_helper(media, s3_key_col='s3_key', url_col='original_url')
     for index, row in media.iloc[starting_i : ending_i].iterrows():
         # width = min(column_width, row['width'])
         # if width == row['width']:
@@ -208,22 +278,8 @@ def month_gallery_page(year, month, page, column_width=400, items_per_page=50):
             comma = ','
 
         d = {
-            'url': s3_client.generate_presigned_url(
-                ClientMethod='get_object',
-                Params={
-                    'Bucket': config.s3_bucket_name,
-                    'Key': row['thumbnail_key'],
-                },
-                ExpiresIn=60*60,  # One hour in seconds
-            ),
-            'original_url': s3_client.generate_presigned_url(
-                ClientMethod='get_object',
-                Params={
-                    'Bucket': config.s3_bucket_name,
-                    'Key': row['s3_key'],
-                },
-                ExpiresIn=60*60,  # One hour in seconds
-            ),
+            'url': row['url'],
+            'original_url': row['original_url'],
             'width': row['thumbnail_width'],
             'height': row['thumbnail_height'],
             'original_width': row['width'],
@@ -244,10 +300,12 @@ def month_gallery_page(year, month, page, column_width=400, items_per_page=50):
             d['video_type'] = ''
         thumbnails.append(d)
     
+    # TODO: don't link to non-existent month pages (pages with no content)
+
     if next_month_start > datetime.datetime.now():
         next_month_url = 'None'
     else:
-        next_month_url = flask.url_for('month_gallery', year=next_month_start.year, month=next_month_start.month)
+        next_month_url = flask.url_for(month_route, year=next_month_start.year, month=next_month_start.month, page=1)
 
     return flask.render_template(
         'month_gallery_simple.html',
@@ -256,5 +314,5 @@ def month_gallery_page(year, month, page, column_width=400, items_per_page=50):
         year=year, month=month,
         next_page_url=next_page_url,
         next_month_url=next_month_url,
-        prev_month_url=flask.url_for('month_gallery', year=prev_month_start.year, month=prev_month_start.month),
+        prev_month_url=flask.url_for(month_route, year=prev_month_start.year, month=prev_month_start.month, page=1),
     )

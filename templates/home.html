@@ -9,10 +9,10 @@
 <h2>Favorite Pictures</h2>
 {% for index, row in fav_year_df.iterrows() %}
 <div class="gallery" data-mediaid="{{ row['mediaid'] }}">
-    <a href="{{ row['year_link'] }}">
-        <img src="{{ row['thumbnail_url'] }}" width="{{ row['thumbnail_width'] }}" height="{{ row['thumbnail_height'] }}">
-        <div class="desc">{{ row['year_str'] }}</div>
-    </a>
-  </div>
+  <a href="{{ row['year_link'] }}">
+      <img src="{{ row['thumbnail_url'] }}" width="{{ row['thumbnail_width'] }}" height="{{ row['thumbnail_height'] }}">
+      <div class="desc">{{ row['year_str'] }}</div>
+  </a>
+</div>
 {% endfor %}
 {% endblock %}

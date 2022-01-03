@@ -31,6 +31,7 @@
         </video>
     {% endif %}
       <div class="desc">{{ thumbnail.formatted_date }}</div>
+      {% if current_user.is_authenticated and current_user.has_roles(['Admin']) %}
       <div class="vote-icons">
           {% if thumbnail.vote_value == 1 %}
             <i class="far fa-trash-alt fa-4x" id="vote-no-{{ thumbnail.mediaid }}"></i>
@@ -43,6 +44,7 @@
             <i class="far fa-star fa-4x" id="vote-yes-{{ thumbnail.mediaid }}"></i>
           {% endif %}
       </div>
+      {% endif %}
     </div>
     {% endfor %}
     {% if next_page_url != '' %}

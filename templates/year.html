@@ -1,7 +1,12 @@
 {% extends "flask_user_layout.html" %}
 {% block content %}
 <h2>Months</h2>
-{% for month, month_link in month_tuples %}
-<a href="{{ month_link }}">{{ month }}</a>
+{% for index, row in months_df.iterrows() %}
+<div class="gallery" data-mediaid="{{ row['mediaid'] }}">
+  <a href="{{ row['month_link'] }}">
+    <img src="{{ row['thumbnail_url'] }}" width="{{ row['thumbnail_width'] }}" height="{{ row['thumbnail_height'] }}">
+    <div class="desc">{{ row['month_str'] }}</div>
+  </a>
+</div>
 {% endfor %}
 {% endblock %}
