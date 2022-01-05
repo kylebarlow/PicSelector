@@ -55,9 +55,15 @@ def home_page():
     local_time = pytz.timezone('UTC').localize(datetime.datetime.utcnow()).astimezone(pytz.timezone('America/Los_Angeles'))
     df_day = df.loc[(df['sum_votes'] > 0) & (df['month'] == local_time.month) & (df['day'] == local_time.day) & (df['year'] < local_time.year)].drop_duplicates('year')
     df_day = generate_signed_urls_helper(df_day)
-    df_day['display_time'] = df_day['creation_time'].apply(lambda x: x.strftime('%A %Y-%m-%d'))
+    df_day['display_time'] = df_day['creation_time'].apply(lambda x: x.strftime('%Y, %A'))    
+    def suffix(d):
+        return 'th' if 11<=d<=13 else {1:'st',2:'nd',3:'rd'}.get(d%10, 'th')
 
-    return flask.render_template('home.html', all_year_df=df_years, fav_year_df=df_fav_years, df_day=df_day, len_df_day=len(df_day))
+    def custom_strftime(format, t):
+        return t.strftime(format).replace('{S}', str(t.day) + suffix(t.day))
+    current_date_header_display = custom_strftime('%B {S}', local_time)
+
+    return flask.render_template('home.html', all_year_df=df_years, fav_year_df=df_fav_years, df_day=df_day, len_df_day=len(df_day), current_date_header_display=current_date_header_display)
 
 
 def generate_signed_urls_helper(df, s3_key_col = 'thumbnail_key', url_col='thumbnail_url'):

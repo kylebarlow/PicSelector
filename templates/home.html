@@ -7,7 +7,7 @@
 {% endfor %}
 {% endif %}
 {% if len_df_day > 0 %}
-<h2>On this day</h2>
+<h2>On this day - {{ current_date_header_display }}</h2>
 {% for index, row in df_day.iterrows() %}
 <div class="gallery" data-mediaid="{{ row['mediaid'] }}">
   <img src="{{ row['thumbnail_url'] }}" width="{{ row['thumbnail_width'] }}" height="{{ row['thumbnail_height'] }}">
