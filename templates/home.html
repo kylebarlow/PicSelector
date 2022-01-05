@@ -6,12 +6,21 @@
 <a href="{{ row['year_link'] }}">{{ row['year_str'] }}</a>
 {% endfor %}
 {% endif %}
+{% if len_df_day > 0 %}
+<h2>On this day</h2>
+{% for index, row in df_day.iterrows() %}
+<div class="gallery" data-mediaid="{{ row['mediaid'] }}">
+  <img src="{{ row['thumbnail_url'] }}" width="{{ row['thumbnail_width'] }}" height="{{ row['thumbnail_height'] }}">
+  <div class="desc">{{ row['display_time'] }}</div>
+</div>
+{% endfor %}
+{% endif %}
 <h2>Favorite Pictures</h2>
 {% for index, row in fav_year_df.iterrows() %}
 <div class="gallery" data-mediaid="{{ row['mediaid'] }}">
   <a href="{{ row['year_link'] }}">
-      <img src="{{ row['thumbnail_url'] }}" width="{{ row['thumbnail_width'] }}" height="{{ row['thumbnail_height'] }}">
-      <div class="desc">{{ row['year_str'] }}</div>
+    <img src="{{ row['thumbnail_url'] }}" width="{{ row['thumbnail_width'] }}" height="{{ row['thumbnail_height'] }}">
+    <div class="desc">{{ row['year_str'] }}</div>
   </a>
 </div>
 {% endfor %}

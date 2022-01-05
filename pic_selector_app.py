@@ -2,6 +2,7 @@ import os
 import math
 import calendar
 import datetime
+import pytz
 
 import flask
 from flask import request, jsonify
@@ -32,7 +33,7 @@ user_manager = UserManager(app, db, User)
 @login_required
 def home_page():
     df = pd.read_sql_query('''
-        SELECT EXTRACT(YEAR FROM creation_time) as year, creation_time, thumbnail.key as thumbnail_key, thumbnail.width as thumbnail_width, thumbnail.height as thumbnail_height, SUM(votes.vote_value) AS sum_votes, media.id as mediaid
+        SELECT EXTRACT(YEAR FROM creation_time) as year, EXTRACT(MONTH FROM creation_time) as month, EXTRACT(DAY FROM creation_time) as day, creation_time, thumbnail.key as thumbnail_key, thumbnail.width as thumbnail_width, thumbnail.height as thumbnail_height, SUM(votes.vote_value) AS sum_votes, media.id as mediaid
         from media
         JOIN thumbnail ON thumbnail.media_id=media.id
         LEFT JOIN votes on media.id = votes.media_id
@@ -50,7 +51,13 @@ def home_page():
     df_fav_years = df.loc[df['sum_votes'] > 0].drop_duplicates('year')
     df_fav_years['year_link'] = df_fav_years['year'].apply(lambda year: flask.url_for('fav_year_gallery', year=year))
     df_fav_years = generate_signed_urls_helper(df_fav_years)
-    return flask.render_template('home.html', all_year_df=df_years, fav_year_df=df_fav_years)
+
+    local_time = pytz.timezone('UTC').localize(datetime.datetime.utcnow()).astimezone(pytz.timezone('America/Los_Angeles'))
+    df_day = df.loc[(df['sum_votes'] > 0) & (df['month'] == local_time.month) & (df['day'] == local_time.day) & (df['year'] < local_time.year)].drop_duplicates('year')
+    df_day = generate_signed_urls_helper(df_day)
+    df_day['display_time'] = df_day['creation_time'].apply(lambda x: x.strftime('%A %Y-%m-%d %I:%M %p'))
+
+    return flask.render_template('home.html', all_year_df=df_years, fav_year_df=df_fav_years, df_day=df_day, len_df_day=len(df_day))
 
 
 def generate_signed_urls_helper(df, s3_key_col = 'thumbnail_key', url_col='thumbnail_url'):
