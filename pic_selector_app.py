@@ -264,15 +264,24 @@ def render_month(year, month, page, column_width=400, items_per_page=50, favs_on
     photoswipe_i = 0
     last_photo_index = media.loc[ media['media_type']==0 ].iloc[-1].name
     
+    max_page = math.ceil(len(media)/items_per_page)
     if len(media) > items_per_page:
-        page_header_text = ' - Page %d of %d' % (page, math.ceil(len(media)/items_per_page))
+        page_header_text = ' - Page %d of %d' % (page, max_page)
     else:
         page_header_text = ''
     
-    if len(media) > items_per_page and page < math.ceil(len(media)/items_per_page):
-        next_page_url = flask.url_for(month_route, year=year, month=month, page=page + 1)
+    next_page_url = ''
+    if page > 1:
+        next_page_url += '<a href="%s">Previous page</a> ' % (flask.url_for(month_route, year=year, month=month, page=page - 1),)
+    for page_i in range(1, max_page+1):
+        if page_i == page:
+            next_page_url += '<b>%d</b> ' % (page,)
+        else:
+            next_page_url += '<a href="%s">%d</a> ' % (flask.url_for(month_route, year=year, month=month, page=page_i), page_i)
+    if len(media) > items_per_page and page < max_page:
+        next_page_url += '<a href="%s">Next page</a>' % flask.url_for(month_route, year=year, month=month, page=page + 1)
     else:
-        next_page_url = ''
+        next_page_url = next_page_url[:-1]
 
     starting_i = (page - 1) * items_per_page
     ending_i = page * items_per_page + 1

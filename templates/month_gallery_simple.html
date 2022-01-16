@@ -47,9 +47,7 @@
       {% endif %}
     </div>
     {% endfor %}
-    {% if next_page_url != '' %}
-    <h1><a href="{{ next_page_url }}">Next Page</a></h1>
-    {% endif %}
+    <h1>{{ next_page_url | safe }}</div></h1>
     <h2><a href="{{ prev_month_url }}">Previous month</a></h2>
     {% if next_month_url != 'None' %}
     <h2><a href="{{ next_month_url }}">Next month</a></h2>
