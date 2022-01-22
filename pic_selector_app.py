@@ -43,10 +43,11 @@ def home_page():
     df = df.loc[~df['year'].isna()]
     df['randcol'] = np.random.random(size=df.shape[0])
     df['sum_votes'] = df['sum_votes'].fillna(0)
-    df = df.sort_values(['year', 'sum_votes', 'randcol'], ascending=[True, False, True])
+    df = df.sort_values(['year', 'sum_votes', 'randcol'], ascending=[False, False, True])
     df['year_str'] = df['year'].astype(int).astype(str)
     df_years = df.loc[(df['sum_votes'] >= 0) & (df['year'] >= 2006)].drop_duplicates('year')
     df_years['year_link'] = df_years['year'].apply(lambda year: flask.url_for('year_gallery', year=year))
+    df_years = df_years.sort_values(['year', 'sum_votes', 'randcol'], ascending=[True, False, True])
     df_years = generate_signed_urls_helper(df_years)
     df_fav_years = df.loc[df['sum_votes'] > 0].drop_duplicates('year')
     df_fav_years['year_link'] = df_fav_years['year'].apply(lambda year: flask.url_for('fav_year_gallery', year=year))
@@ -55,7 +56,7 @@ def home_page():
     local_time = pytz.timezone('UTC').localize(datetime.datetime.utcnow()).astimezone(pytz.timezone('America/Los_Angeles'))
     df_day = df.loc[(df['sum_votes'] > 0) & (df['month'] == local_time.month) & (df['day'] == local_time.day) & (df['year'] < local_time.year)].drop_duplicates('year')
     df_day = generate_signed_urls_helper(df_day)
-    df_day['display_time'] = df_day['creation_time'].apply(lambda x: x.strftime('%Y, %A'))    
+    df_day['display_time'] = df_day['creation_time'].apply(lambda x: x.strftime('%Y, %A'))
     def suffix(d):
         return 'th' if 11<=d<=13 else {1:'st',2:'nd',3:'rd'}.get(d%10, 'th')
 
