@@ -1,0 +1,13 @@
+<!-- https://www.w3schools.com/css/css_image_gallery.asp -->
+
+{% extends 'flask_user_layout.html' %}
+{% block content %}
+{% for index, row in videos_df.iterrows() %}
+<div class="gallery">
+  <video controls width="718" height="438">
+    <source src="{{ row['thumbnail_url'] }}" type="video/mp4">
+  </video>
+<div class="desc">{{ row['desc'] }}</div>
+</div>
+{% endfor %}
+{% endblock %}

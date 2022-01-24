@@ -14,6 +14,7 @@
   <div class="desc">{{ row['display_time'] }}</div>
 </div>
 {% endfor %}
+<h2><a href="{{ url_for('videos') }}">Videos</a></h2>
 {% endif %}
 <h2>Favorite Pictures</h2>
 {% for index, row in fav_year_df.iterrows() %}

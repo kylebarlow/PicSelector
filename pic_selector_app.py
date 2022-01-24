@@ -28,7 +28,6 @@ import sqlalchemy
 # Setup Flask-User and specify the User data-model
 user_manager = UserManager(app, db, User)
 
-# The Home page is accessible to anyone
 @app.route('/')
 @login_required
 def home_page():
@@ -67,6 +66,20 @@ def home_page():
     return flask.render_template('home.html', all_year_df=df_years, fav_year_df=df_fav_years, df_day=df_day, len_df_day=len(df_day), current_date_header_display=current_date_header_display)
 
 
+@app.route('/videos')
+@login_required
+def videos():
+    videos_df = [
+        ['Welcome Alyssa', 'video_backups/welcome-alyssa/welcome-alyssa-part-1.m4v'],
+        ['Welcome Kyle - Part 1', 'video_backups/welcome-kyle/welcome-kyle-part-1.m4v'],
+        ['Welcome Kyle - Part 2', 'video_backups/welcome-kyle/welcome-kyle-part-2.m4v'],
+        ['Welcome Kyle (and Alyssa) - Part 3', 'video_backups/welcome-kyle/welcome-kyle-part-3.m4v'],
+    ]
+    videos_df = pd.DataFrame(videos_df, columns=['desc', 's3_key'])
+    videos_df = generate_signed_urls_helper(videos_df, s3_key_col='s3_key')
+    return flask.render_template('videos.html', videos_df=videos_df)
+
+    
 def generate_signed_urls_helper(df, s3_key_col = 'thumbnail_key', url_col='thumbnail_url'):
     session = boto3.session.Session(
         aws_access_key_id=config.access_key,
