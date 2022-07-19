@@ -65,7 +65,7 @@ def make_ss_time(time_in_s):
     return str(datetime.timedelta(seconds=time_in_s))
 
 
-def process_video(fpath, max_thumbnail_height=400, max_thumbnail_samples=5000):
+def process_video(fpath, max_thumbnail_height=400, max_thumbnail_samples=1000):
     info = find_probe_info(ffmpeg.probe(fpath), desired_keys=['duration', 'location', 'creation_time', 'height', 'width'])
     # pprint(ffmpeg.probe(fpath))
 
@@ -368,8 +368,9 @@ class DirectoryMonitor():
         subdirs_only=[],
         start_date=None,
         remove_after_upload=False,
+        check_existing_hashes=False,
         add_existing_files=True, monitor_new=True, max_file_queue_size=100, 
-        num_processing_threads=4, processing_niceness=10, max_metadata_queue_size=5000, max_s3_queue_size=1000, num_s3_threads=2,
+        num_processing_threads=4, processing_niceness=10, max_metadata_queue_size=5000, max_s3_queue_size=1000, num_s3_threads=1,
     ):
         assert(os.path.isdir(root_dir))
         self.remove_after_upload = remove_after_upload
@@ -393,13 +394,21 @@ class DirectoryMonitor():
         else:
             assert(add_existing_files)
 
+        if check_existing_hashes:
+            existing_hashes = get_existing_hashes()
+        else:
+            existing_hashes = set()
+        # print('Existing hashes')
+        # print(list(existing_hashes)[:5])
+        # sys.exit()
+
         self.initial_walkers = []
         if self.add_existing_files:
             if len(self.subdirs_only) > 0:
                 for subdir in self.subdirs_only:
-                    self.initial_walkers.append(multiprocessing.Process(target=walk_dir, args=(subdir, self.queue)))
+                    self.initial_walkers.append(multiprocessing.Process(target=walk_dir, args=(subdir, self.queue, existing_hashes, remove_after_upload)))
             else:
-                self.initial_walkers.append(multiprocessing.Process(target=walk_dir, args=(self.root_dir, self.queue)))
+                self.initial_walkers.append(multiprocessing.Process(target=walk_dir, args=(self.root_dir, self.queue, existing_hashes, remove_after_upload)))
             for iw in self.initial_walkers:
                 iw.start()
 
@@ -513,6 +522,15 @@ def media_processor_worker(file_queue, metadata_queue, niceness, root_dir, start
         metadata_queue.put(metadata)
 
 
+def get_existing_hashes():
+    with DatabaseConnector() as conn:
+        existing = pd.read_sql_query(
+            '''SELECT sha256_hash FROM media''', 
+            conn,
+        )
+    return set([x.tobytes() for x in existing['sha256_hash'].values])
+
+
 def path_queue_worker(path_queue, remove_after_upload):
     while True:
         event = path_queue.get()
@@ -538,19 +556,17 @@ def path_queue_worker(path_queue, remove_after_upload):
                     conn,
                     params=(media_id, fpath),
                 )
-                if len(existing_paths) > 0:
-                    continue
-
-                cursor = conn.cursor()
-                cursor.execute(
-                    '''INSERT INTO keys (media_id, key)
-                    VALUES(%s, %s)
-                    ;''',
-                    (
-                        media_id, fpath,
-                    ),
-                )
-                conn.commit()
+                if len(existing_paths) == 0:
+                    cursor = conn.cursor()
+                    cursor.execute(
+                        '''INSERT INTO keys (media_id, key)
+                        VALUES(%s, %s)
+                        ;''',
+                        (
+                            media_id, fpath,
+                        ),
+                    )
+                    conn.commit()
         except Exception:
             raise
         else:
@@ -569,7 +585,7 @@ def metadata_processor_worker(metadata_queue, s3_queue, path_queue, batch_size=5
     while True:
         metadata = metadata_queue.get()
         if metadata is not None and metadata['sha256_hash'] in sha_256_hashes_this_session:
-            path_queue.put((metadata['sha256_hash'], metadata['fpath_relative']))
+            path_queue.put((metadata['sha256_hash'], metadata['fpath_relative'], metadata['fpath']))
 
         if metadata is None or len(metadata_batch)+1 >= batch_size:
             if metadata is not None and metadata['sha256_hash'] not in sha_256_hashes_this_session:
@@ -582,7 +598,7 @@ def metadata_processor_worker(metadata_queue, s3_queue, path_queue, batch_size=5
                     s3_queue.put(metadata_x)
                 for metadata_x in existing_metadata_batch:
                     # No update logic for now, assume already existing and check path keys only
-                    path_queue.put((metadata_x['sha256_hash'], metadata_x['fpath_relative']))
+                    path_queue.put((metadata_x['sha256_hash'], metadata_x['fpath_relative'], metadata['fpath']))
                 metadata_batch = []
             if metadata is None:
                 break
@@ -726,12 +742,25 @@ def combine_queues(main_queue, secondary_queue):
         main_queue.put(secondary_queue.get())
 
 
-def walk_dir(root_dir, queue):
+def walk_dir(root_dir, queue, existing_hashes, remove_after_upload):
     assert(os.path.isdir(root_dir))
     for dirpath, dirnames, filenames in os.walk(root_dir):
         for fpath in [os.path.join(dirpath, filename) for filename in filenames]:
             if path_is_image_or_video(fpath):
-                queue.put(watchdog.events.FileCreatedEvent(os.path.abspath(fpath)))
+                if len(existing_hashes) > 0:                 
+                    with open(fpath, "rb") as f:
+                        file_hash = hashlib.sha256()
+                        while chunk := f.read(64*16):
+                            file_hash.update(chunk)
+                    sha_hash = file_hash.digest()
+                    if sha_hash in existing_hashes:
+                        if remove_after_upload:
+                            os.remove(fpath)
+                        pass
+                    else:
+                        queue.put(watchdog.events.FileCreatedEvent(os.path.abspath(fpath)))
+                else:
+                    queue.put(watchdog.events.FileCreatedEvent(os.path.abspath(fpath)))
 
 
 def path_is_image_or_video(fpath):
@@ -805,6 +834,10 @@ if __name__ == '__main__':
         help='Keep running, monitoring for new files',
     )
     parser.add_argument(
+        '--check_existing_hashes', action='store_true', default=False,
+        help='During initial walk, remove files already in DB',
+    )
+    parser.add_argument(
         '--remove_after_upload', action='store_true', default=False,
         help='Remove files from local disk after processing',
     )
@@ -825,7 +858,7 @@ if __name__ == '__main__':
     dm = DirectoryMonitor(
         args.root_directory, subdirs_only=args.subdir_to_scan, monitor_new=args.monitor_new,
         start_date=args.start_date, num_processing_threads=args.num_processing_threads,
-        remove_after_upload=args.remove_after_upload,
+        remove_after_upload=args.remove_after_upload, check_existing_hashes=args.check_existing_hashes,
     )
 
     if args.monitor_new:
