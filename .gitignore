@@ -1,3 +1,4 @@
+.env
 pic_selector.sock
 config.py
 pics_venv
