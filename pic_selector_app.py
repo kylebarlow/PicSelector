@@ -300,6 +300,7 @@ def render_month(year, month, page, column_width=400, items_per_page=50, favs_on
     starting_i = (page - 1) * items_per_page
     ending_i = page * items_per_page + 1
 
+    # TODO: issue here with photoswipe URLs - they contain &amp; which is getting interpreted literally, needs to be not included
     media = generate_signed_urls_helper(media, s3_key_col='thumbnail_key', url_col='url')
     media = generate_signed_urls_helper(media, s3_key_col='s3_key', url_col='original_url')
     for index, row in media.iloc[starting_i : ending_i].iterrows():
