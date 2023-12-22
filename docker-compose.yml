@@ -1,5 +1,16 @@
 version: "3.3"
 services:
+  flask:
+    build: 
+      context: .
+      dockerfile: flask.dockerfile
+    restart: always
+    env_file:
+      - .env
+    ports:
+      - 5000:5000
+    depends_on:
+      - db
   db:
     build: 
       context: .
