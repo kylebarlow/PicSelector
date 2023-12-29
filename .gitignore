@@ -1,6 +1,5 @@
 .env
 pic_selector.sock
-config.py
 pics_venv
 
 # Byte-compiled / optimized / DLL files
