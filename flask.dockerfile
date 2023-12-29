@@ -4,6 +4,7 @@ FROM ubuntu:22.04
 
 RUN apt update
 RUN apt install -y ffmpeg python3-pip
+RUN apt install -y libpq-dev
 
 WORKDIR /python_docker
 
@@ -14,12 +15,16 @@ RUN pip3 install -r requirements.txt
 RUN apt install -y nginx
 
 WORKDIR /webwork
-COPY pic_selector_app.py .
-COPY wsgi.py .
-COPY pic_selector.ini .
-COPY system_config/pic_selector.service /etc/systemd/system/pic_selector.service
+# Python code
+COPY . .
+
+# Server config
+# COPY wsgi.py .
+# COPY pic_selector.ini .
+COPY system_config/flask_docker_run_services.sh .
 COPY system_config/pic_selector.site /etc/nginx/sites-available/pic_selector
 
 RUN ln -s /etc/nginx/sites-available/pic_selector /etc/nginx/sites-enabled/pic_selector
 
 # CMD [ "python3", "-m" , "flask", "--app", "pic_selector_app", "run", "--host=0.0.0.0", "--port=5000"]
+CMD /webwork/flask_docker_run_services.sh

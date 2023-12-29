@@ -25,6 +25,14 @@ import sqlalchemy
 # Create all database tables
 # db.create_all()
 
+app = flask.Flask(__name__)
+app.config.from_prefixed_env()
+app.config['USER_ENABLE_EMAIL'] = False
+app.config['USER_ENABLE_USERNAME'] = True
+app.config['USER_REQUIRE_RETYPE_PASSWORD'] = False
+app.config['USER_ENABLE_REGISTER'] = False
+db.init_app(app)
+
 # Setup Flask-User and specify the User data-model
 user_manager = UserManager(app, db, User)
 
@@ -101,6 +109,8 @@ def generate_signed_urls_helper(df, s3_key_col = 'thumbnail_key', url_col='thumb
             ExpiresIn=60*60,  # One hour in seconds
         )
     )
+    pd.set_option('display.max_colwidth', 200)
+    print(df.head())
     return df
 
 

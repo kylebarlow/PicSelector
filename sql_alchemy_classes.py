@@ -2,10 +2,8 @@ from flask import Flask
 from flask_user import UserMixin
 from flask_sqlalchemy import SQLAlchemy
 
-import config
-
 app = Flask(__name__)
-app.config.update(config.flask_settings)
+app.config.from_prefixed_env()
 db = SQLAlchemy(app)
 
 # Define the User data-model.

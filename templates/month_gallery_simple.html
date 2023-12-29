@@ -23,11 +23,11 @@
     {% for thumbnail in thumbnails %}
     {% if thumbnail.media_type == 0 %}
     <div class="gallery" data-mediaid="{{ thumbnail.mediaid }}">
-        <img src="{{ thumbnail.url }}" width="{{ thumbnail.width }}" height="{{ thumbnail.height }}" onclick="openPhotoSwipe({{ thumbnail.photoswipe_index }})">
+        <img src="{{ thumbnail.url|safe }}" width="{{ thumbnail.width }}" height="{{ thumbnail.height }}" onclick="openPhotoSwipe({{ thumbnail.photoswipe_index }})">
     {% else %}
     <div class="gallery" data-mediaid="{{ thumbnail.mediaid }}">
-        <video controls poster="{{ thumbnail.url }}" width="{{ thumbnail.width }}" height="{{ thumbnail.height }}">
-          <source src="{{ thumbnail.original_url }}" type="video/{{ thumbnail.video_type }}">
+        <video controls poster="{{ thumbnail.url|safe }}" width="{{ thumbnail.width }}" height="{{ thumbnail.height }}">
+          <source src="{{ thumbnail.original_url|safe }}" type="video/{{ thumbnail.video_type }}">
         </video>
     {% endif %}
       <div class="desc">{{ thumbnail.formatted_date }}</div>
@@ -133,8 +133,8 @@
   {% for thumbnail in thumbnails %}
   {% if thumbnail.media_type == 0 %}
   {
-      src: '{{ thumbnail.original_url }}',
-      msrc: '{{ thumbnail.url }}',
+      src: '{{ thumbnail.original_url|safe }}',
+      msrc: '{{ thumbnail.url|safe }}',
       w: {{ thumbnail.original_width }},
       h: {{ thumbnail.original_height }}
   }{{ thumbnail.comma }}
