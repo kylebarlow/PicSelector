@@ -7,7 +7,9 @@ import hashlib
 import multiprocessing
 import tempfile
 import argparse
+import re
 from pprint import pprint
+import sqlalchemy
 
 import filetype
 import watchdog
@@ -34,6 +36,7 @@ import boto3
 import botocore
 import botocore.exceptions
 
+S3_LOCAL_CACHE_PATH = '/tmp/pic_selector_local_s3_cache'
 
 def process_media_file(event):
     fpath = event.src_path
@@ -366,15 +369,22 @@ class DirectoryMonitor():
     def __init__(
         self, root_dir,
         subdirs_only=[],
+        sub_keys_to_scan=[],
         start_date=None,
         remove_after_upload=False,
         check_existing_hashes=False,
+        check_existing_keys=False,
         add_existing_files=True, monitor_new=True, max_file_queue_size=100, 
         num_processing_threads=4, processing_niceness=10, max_metadata_queue_size=5000, max_s3_queue_size=1000, num_s3_threads=1,
     ):
-        assert(os.path.isdir(root_dir))
+        if not os.path.isdir(S3_LOCAL_CACHE_PATH):
+            os.makedirs(S3_LOCAL_CACHE_PATH)
+        if root_dir == 'no_root_dir':
+            self.root_dir = None
+        else:
+            assert (os.path.isdir(root_dir))
+            self.root_dir = os.path.abspath(root_dir)
         self.remove_after_upload = remove_after_upload
-        self.root_dir = os.path.abspath(root_dir)
         self.start_date = start_date
         self.subdirs_only = subdirs_only
         if len(subdirs_only) > 0:
@@ -387,30 +397,46 @@ class DirectoryMonitor():
         self.s3_queue = multiprocessing.Queue(maxsize=max_s3_queue_size)
         self.path_queue = multiprocessing.Queue()
         self.num_processing_threads = num_processing_threads
+        self.check_existing_keys = check_existing_keys
+        self.sub_keys_to_scan = sub_keys_to_scan
         if monitor_new:
             self.initialize_watchdogs()
             self.queue_combiner = multiprocessing.Process(target=combine_queues, args=(self.queue, self.watchdog_queue))
             self.queue_combiner.start()
         else:
-            assert(add_existing_files)
+            assert (add_existing_files or len(sub_keys_to_scan) > 0)
 
         if check_existing_hashes:
             existing_hashes = get_existing_hashes()
         else:
             existing_hashes = set()
-        # print('Existing hashes')
-        # print(list(existing_hashes)[:5])
-        # sys.exit()
+
+        if check_existing_keys:
+            existing_keys = get_existing_keys()
+        else:
+            existing_keys = set()
+
+        self.path_worker = multiprocessing.Process(target=path_queue_worker, args=(self.path_queue, self.remove_after_upload))
+        self.path_worker.start()
 
         self.initial_walkers = []
         if self.add_existing_files:
             if len(self.subdirs_only) > 0:
                 for subdir in self.subdirs_only:
                     self.initial_walkers.append(multiprocessing.Process(target=walk_dir, args=(subdir, self.queue, existing_hashes, remove_after_upload)))
-            else:
+            elif self.root_dir:
                 self.initial_walkers.append(multiprocessing.Process(target=walk_dir, args=(self.root_dir, self.queue, existing_hashes, remove_after_upload)))
-            for iw in self.initial_walkers:
-                iw.start()
+        if len(self.sub_keys_to_scan) > 0:
+            for sub_key in self.sub_keys_to_scan:
+                self.initial_walkers.append(multiprocessing.Process(target=list_s3, args=(sub_key, self.queue, existing_hashes, existing_keys, self.path_queue)))
+        for iw in self.initial_walkers:
+            iw.start()
+
+        for iw in self.initial_walkers:
+            iw.join()
+        self.path_queue.put(None)
+        self.path_worker.join()
+        sys.exit()
 
         self.media_process_pool = multiprocessing.Pool(
             processes=self.num_processing_threads,
@@ -420,9 +446,6 @@ class DirectoryMonitor():
 
         self.metadata_worker = multiprocessing.Process(target=metadata_processor_worker, args=(self.metadata_queue, self.s3_queue, self.path_queue))
         self.metadata_worker.start()
-
-        self.path_worker = multiprocessing.Process(target=path_queue_worker, args=(self.path_queue, self.remove_after_upload))
-        self.path_worker.start()
 
         self.num_s3_threads = num_s3_threads
         self.s3_upload_pool = multiprocessing.Pool(
@@ -509,10 +532,13 @@ def media_processor_worker(file_queue, metadata_queue, niceness, root_dir, start
             # First try filename
             fname = os.path.splitext(os.path.basename(fpath))[0]
             try:
-                file_creation_time = datetime.datetime.strptime(fname, '%Y-%m-%d %H.%M.%S')
+                file_creation_time = datetime.datetime.strptime(fname, r'%Y-%m-%d %H.%M.%S')
             except ValueError:
-                # Fallback to file creation time
-                file_creation_time = datetime.datetime.fromtimestamp(os.path.getctime(fpath))
+                try:
+                    file_creation_time = datetime.datetime.strptime(fname+'000', r'PXL_%Y%m%d_%H%M%S%f')
+                except ValueError:
+                    # Fallback to file creation time
+                    file_creation_time = datetime.datetime.fromtimestamp(os.path.getctime(fpath))
             if file_creation_time < start_date:
                 continue
 
@@ -529,6 +555,15 @@ def get_existing_hashes():
             conn,
         )
     return set([x.tobytes() for x in existing['sha256_hash'].values])
+
+
+def get_existing_keys():
+    with DatabaseConnector() as conn:
+        existing = pd.read_sql_query(
+            '''SELECT key FROM keys''',
+            conn,
+        )
+    return set([x for x in existing['key'].values])
 
 
 def path_queue_worker(path_queue, remove_after_upload):
@@ -557,8 +592,8 @@ def path_queue_worker(path_queue, remove_after_upload):
                     params=(media_id, fpath),
                 )
                 if len(existing_paths) == 0:
-                    cursor = conn.cursor()
-                    cursor.execute(
+                    print('Adding path', fpath, 'for media_id', media_id)
+                    conn.execute(
                         '''INSERT INTO keys (media_id, key)
                         VALUES(%s, %s)
                         ;''',
@@ -566,7 +601,6 @@ def path_queue_worker(path_queue, remove_after_upload):
                             media_id, fpath,
                         ),
                     )
-                    conn.commit()
         except Exception:
             raise
         else:
@@ -667,8 +701,7 @@ def s3_upload_worker(s3_queue, path_queue):
             media_type = 1
 
         with DatabaseConnector() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
+            conn.execute(
                 '''INSERT INTO media (sha256_hash, creation_time, media_type, file_size, height, width, latitude, longitude, s3_key)
                 VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ;''',
@@ -678,7 +711,6 @@ def s3_upload_worker(s3_queue, path_queue):
                     metadata['fpath_relative'],
                 ),
             )
-            conn.commit()
             existing = pd.read_sql_query(
                 '''SELECT id, sha256_hash FROM media WHERE sha256_hash=%s''', 
                 conn,
@@ -687,7 +719,7 @@ def s3_upload_worker(s3_queue, path_queue):
             assert(len(existing) == 1)
             media_id = int(existing.iloc[0]['id'])
 
-            cursor.execute(
+            conn.execute(
                 '''INSERT INTO thumbnail (media_id, key, height, width, file_size)
                 VALUES(%s, %s, %s, %s, %s);''',
                 (
@@ -697,7 +729,7 @@ def s3_upload_worker(s3_queue, path_queue):
             )
 
             if metadata['media_type'] == 'video':
-                cursor.execute(
+                conn.execute(
                     '''INSERT INTO videos (id, duration)
                     VALUES(%s, %s);''',
                     (
@@ -706,7 +738,7 @@ def s3_upload_worker(s3_queue, path_queue):
                 )
 
             if metadata['media_type'] == 'image':
-                cursor.execute(
+                conn.execute(
                     '''INSERT INTO images (id,
                     average_hash1, average_hash2, average_hash3, average_hash4,
                     difference_hash1, difference_hash2, difference_hash3, difference_hash4,
@@ -730,9 +762,6 @@ def s3_upload_worker(s3_queue, path_queue):
                     ),
                 )
             
-            conn.commit()
-            cursor.close()
-
         print('S3 upload complete:', os.path.basename(metadata['fpath']))
         path_queue.put((metadata['sha256_hash'], metadata['fpath_relative'], metadata['fpath']))
 
@@ -742,17 +771,93 @@ def combine_queues(main_queue, secondary_queue):
         main_queue.put(secondary_queue.get())
 
 
+def list_s3(sub_key, queue, existing_hashes, existing_keys, path_queue):
+    session = boto3.session.Session(
+        aws_access_key_id=config.access_key,
+        aws_secret_access_key=config.secret_key,
+    )
+    s3_client = session.client(
+        "s3",
+        config=config.boto_config,
+        endpoint_url=config.s3_endpoint_url,
+    )
+    if sub_key[-1] != '/':
+        sub_key += '/'
+    s3_result = s3_client.list_objects_v2(Bucket=config.s3_bucket_name, Prefix=sub_key, Delimiter="/")
+
+    assert ('Contents' in s3_result)
+
+    file_list = []
+    for key in s3_result['Contents']:
+        file_list.append(key['Key'])
+
+    while s3_result['IsTruncated']:
+        continuation_key = s3_result['NextContinuationToken']
+        s3_result = s3_client.list_objects_v2(Bucket=config.s3_bucket_name, Prefix=sub_key, Delimiter="/", ContinuationToken=continuation_key)
+        for key in s3_result['Contents']:
+            file_list.append(key['Key'])
+
+    non_thumb_s3_keys = set()
+    for f in file_list:
+        m = re.search(r'\d+w[_]\d+h', f)  # Thumbnails already created
+        if not m and f[-1] != '/':
+            non_thumb_s3_keys.add(f)
+
+    # existing_fnames_to_keys = {}
+    # for existing_key in existing_keys:
+    #     existing_fnames_to_keys[os.path.basename(existing_key)] = existing_key
+
+    new_keys = non_thumb_s3_keys - existing_keys
+    print('{:d} new files in {:s} out of {:d} total'.format(len(new_keys), sub_key, len(non_thumb_s3_keys)))
+    # print(file_list)
+    # print(existing_keys)
+    # print(sorted(new_files))
+
+    # Download files to local temporary cache
+    hash_match_count = 0
+    for s3_key in list(new_keys):
+        if not s3_key.endswith('.jpg'):
+            continue
+        local_path = os.path.join(S3_LOCAL_CACHE_PATH, s3_key)
+        parent_dir = os.path.dirname(local_path)
+        if not os.path.isdir(parent_dir):
+            os.makedirs(parent_dir)
+        try:
+            print('Downloading', s3_key, 'to', local_path)
+            s3_client.download_file(config.s3_bucket_name, s3_key, local_path)
+        except Exception as e:
+            print('Downloading error:', s3_key)
+            print(e)
+            continue
+
+        sha_hash = get_file_hash_helper(local_path)
+        if sha_hash in existing_hashes:
+            print('Hash match, key missing from keys:', s3_key)
+            path_queue.put((sha_hash, s3_key, local_path))
+            hash_match_count += 1
+        else:
+            queue.put(watchdog.events.FileCreatedEvent(os.path.abspath(local_path)))
+
+    if hash_match_count > 0:
+        print('Hash match count:', hash_match_count)
+
+
+def get_file_hash_helper(fpath):
+    with open(fpath, "rb") as f:
+        file_hash = hashlib.sha256()
+        while chunk := f.read(64*16):
+            file_hash.update(chunk)
+    sha_hash = file_hash.digest()
+    return sha_hash
+
+
 def walk_dir(root_dir, queue, existing_hashes, remove_after_upload):
-    assert(os.path.isdir(root_dir))
+    assert (os.path.isdir(root_dir))
     for dirpath, dirnames, filenames in os.walk(root_dir):
         for fpath in [os.path.join(dirpath, filename) for filename in filenames]:
             if path_is_image_or_video(fpath):
                 if len(existing_hashes) > 0:                 
-                    with open(fpath, "rb") as f:
-                        file_hash = hashlib.sha256()
-                        while chunk := f.read(64*16):
-                            file_hash.update(chunk)
-                    sha_hash = file_hash.digest()
+                    sha_hash = get_file_hash_helper(fpath)
                     if sha_hash in existing_hashes:
                         if remove_after_upload:
                             os.remove(fpath)
@@ -804,13 +909,16 @@ class DatabaseConnector():
             self.server.start()
             self.local_bind_port = self.server.local_bind_port
 
-        self.conn = psycopg2.connect(
-            dbname=self.database_name,
-            user=self.postgres_user,
-            password=self.postgres_pass,
-            port=self.local_bind_port,
-            host=self.postgres_host,
-        )
+        db_uri = 'postgresql+psycopg2://{}:{}@{}:{}/{}'.format(self.postgres_user, self.postgres_pass, self.postgres_host, self.local_bind_port, self.database_name)
+        db_engine = sqlalchemy.create_engine(db_uri)
+        self.conn = db_engine.connect()
+        # self.conn = psycopg2.connect(
+        #     dbname=self.database_name,
+        #     user=self.postgres_user,
+        #     password=self.postgres_pass,
+        #     port=self.local_bind_port,
+        #     host=self.postgres_host,
+        # )
         return self.conn
 
     def __exit__(self, exc_type, exc_val, exc_tb):
@@ -830,12 +938,20 @@ if __name__ == '__main__':
         help='Only scan for new photos in these subdirectories',
     )
     parser.add_argument(
+        '--sub_keys_to_scan', default=[], nargs='*',
+        help='S3 key prefixes to scan for new media',
+    )
+    parser.add_argument(
         '--monitor_new', action='store_true', default=False,
         help='Keep running, monitoring for new files',
     )
     parser.add_argument(
         '--check_existing_hashes', action='store_true', default=False,
         help='During initial walk, remove files already in DB',
+    )
+    parser.add_argument(
+        '--check_existing_keys', action='store_true', default=False,
+        help='During initial walk, remove S3 keys already in DB',
     )
     parser.add_argument(
         '--remove_after_upload', action='store_true', default=False,
@@ -850,7 +966,8 @@ if __name__ == '__main__':
         '--num_processing_threads', default=4, type=int,
     )
     args = parser.parse_args()
-    assert(os.path.isdir(args.root_directory))
+    if args.root_directory != 'no_root_dir':
+        assert(os.path.isdir(args.root_directory))
     if len(args.subdir_to_scan) > 0:
         for subdir_to_scan in args.subdir_to_scan: 
             assert(os.path.isdir(subdir_to_scan))
@@ -859,6 +976,8 @@ if __name__ == '__main__':
         args.root_directory, subdirs_only=args.subdir_to_scan, monitor_new=args.monitor_new,
         start_date=args.start_date, num_processing_threads=args.num_processing_threads,
         remove_after_upload=args.remove_after_upload, check_existing_hashes=args.check_existing_hashes,
+        check_existing_keys=args.check_existing_keys,
+        sub_keys_to_scan=args.sub_keys_to_scan,
     )
 
     if args.monitor_new:

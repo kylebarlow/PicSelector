@@ -20,6 +20,18 @@ services:
       - .env
     volumes:
       - pgdata:/var/lib/postgresql/data
+  pic_daemon:
+    build: 
+      context: .
+      dockerfile: flask.dockerfile
+    volumes:
+      - /tmp/pic_selector_local_s3_cache:/tmp/pic_selector_local_s3_cache
+    restart: always
+    env_file:
+      - .env
+    depends_on:
+      - db
+    command: /webwork/run_pic_functions.sh
 
   adminer:
     image: adminer
