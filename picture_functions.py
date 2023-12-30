@@ -815,9 +815,9 @@ def list_s3(sub_key, queue, existing_hashes, existing_keys, path_queue):
 
     # Download files to local temporary cache
     hash_match_count = 0
-    for s3_key in list(new_keys):
-        if not s3_key.endswith('.jpg'):
-            continue
+    for s3_key in new_keys:
+        while get_dir_size(S3_LOCAL_CACHE_PATH) > 10**9:  # 1 GB in bytes
+            time.sleep(5)
         local_path = os.path.join(S3_LOCAL_CACHE_PATH, s3_key)
         parent_dir = os.path.dirname(local_path)
         if not os.path.isdir(parent_dir):
@@ -839,7 +839,7 @@ def list_s3(sub_key, queue, existing_hashes, existing_keys, path_queue):
             queue.put(watchdog.events.FileCreatedEvent(os.path.abspath(local_path)))
 
     if hash_match_count > 0:
-        print('Hash match count:', hash_match_count)
+        print('Total hash match count in {}:'.format(sub_key), hash_match_count)
 
 
 def get_file_hash_helper(fpath):
@@ -876,6 +876,18 @@ def path_is_image_or_video(fpath):
         return True
     else:
         return False
+
+
+def get_dir_size(start_path='.'):
+    total_size = 0
+    for dirpath, _, filenames in os.walk(start_path):
+        for f in filenames:
+            fp = os.path.join(dirpath, f)
+            # skip if it is symbolic link
+            if not os.path.islink(fp):
+                total_size += os.path.getsize(fp)
+
+    return total_size
 
 
 class DatabaseConnector():
