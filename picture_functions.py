@@ -318,7 +318,13 @@ def process_image(fpath, max_thumbnail_height=400, run_hashing=True):
     if date_time is None:
         try:
             extension_length = len(fpath.split('.')[-1]) + 1
-            date_time = datetime.datetime.strptime(os.path.basename(fpath)[:-extension_length], "%Y-%m-%d %H.%M.%S")
+            date_time = datetime.datetime.strptime(os.path.basename(fpath)[:-extension_length], r"%Y-%m-%d %H.%M.%S")
+        except Exception:
+            pass
+    if date_time is None:
+        try:
+            extension_length = len(fpath.split('.')[-1]) + 1
+            date_time = datetime.datetime.strptime(os.path.basename(fpath)[:-extension_length]+'000', r'PXL_%Y%m%d_%H%M%S%f')
         except Exception:
             pass
     if date_time is None:
@@ -374,15 +380,19 @@ class DirectoryMonitor():
         remove_after_upload=False,
         check_existing_hashes=False,
         check_existing_keys=False,
-        add_existing_files=True, monitor_new=True, max_file_queue_size=100, 
+        add_existing_files=True, monitor_new=True, max_file_queue_size=10, 
         num_processing_threads=4, processing_niceness=10, max_metadata_queue_size=5000, max_s3_queue_size=1000, num_s3_threads=1,
     ):
         if not os.path.isdir(S3_LOCAL_CACHE_PATH):
             os.makedirs(S3_LOCAL_CACHE_PATH)
         if root_dir == 'no_root_dir':
-            self.root_dir = None
+            self.root_dir = S3_LOCAL_CACHE_PATH
+            assert (len(subdirs_only) == 0)
+            assert (len(sub_keys_to_scan) > 0)
+            self.s3_input_mode = True
         else:
             assert (os.path.isdir(root_dir))
+            self.s3_input_mode = False
             self.root_dir = os.path.abspath(root_dir)
         self.remove_after_upload = remove_after_upload
         self.start_date = start_date
@@ -424,19 +434,13 @@ class DirectoryMonitor():
             if len(self.subdirs_only) > 0:
                 for subdir in self.subdirs_only:
                     self.initial_walkers.append(multiprocessing.Process(target=walk_dir, args=(subdir, self.queue, existing_hashes, remove_after_upload)))
-            elif self.root_dir:
+            elif not self.s3_input_mode:
                 self.initial_walkers.append(multiprocessing.Process(target=walk_dir, args=(self.root_dir, self.queue, existing_hashes, remove_after_upload)))
-        if len(self.sub_keys_to_scan) > 0:
+        if len(self.sub_keys_to_scan) > 0 and self.s3_input_mode:
             for sub_key in self.sub_keys_to_scan:
                 self.initial_walkers.append(multiprocessing.Process(target=list_s3, args=(sub_key, self.queue, existing_hashes, existing_keys, self.path_queue)))
         for iw in self.initial_walkers:
             iw.start()
-
-        for iw in self.initial_walkers:
-            iw.join()
-        self.path_queue.put(None)
-        self.path_worker.join()
-        sys.exit()
 
         self.media_process_pool = multiprocessing.Pool(
             processes=self.num_processing_threads,
@@ -444,14 +448,14 @@ class DirectoryMonitor():
             initargs=(self.queue, self.metadata_queue, processing_niceness, self.root_dir, self.start_date)
         )
 
-        self.metadata_worker = multiprocessing.Process(target=metadata_processor_worker, args=(self.metadata_queue, self.s3_queue, self.path_queue))
+        self.metadata_worker = multiprocessing.Process(target=metadata_processor_worker, args=(self.metadata_queue, self.s3_queue, self.path_queue, existing_hashes))
         self.metadata_worker.start()
 
         self.num_s3_threads = num_s3_threads
         self.s3_upload_pool = multiprocessing.Pool(
             processes=self.num_s3_threads,
             initializer=s3_upload_worker,
-            initargs=(self.s3_queue, self.path_queue)
+            initargs=(self.s3_queue, self.path_queue, self.s3_input_mode)
         )
 
         if not monitor_new:
@@ -609,13 +613,13 @@ def path_queue_worker(path_queue, remove_after_upload):
 
 
 
-def metadata_processor_worker(metadata_queue, s3_queue, path_queue, batch_size=50):
+def metadata_processor_worker(metadata_queue, s3_queue, path_queue, existing_hashes, batch_size=50):
     '''
     Checks database for existing data in batches, and gives S3 uploaders work to do
     '''
     metadata_batch = []
     sha_256_hashes_this_session = set()  # Used to see if we are already uploading file in a different path in this current run
-    
+
     while True:
         metadata = metadata_queue.get()
         if metadata is not None and metadata['sha256_hash'] in sha_256_hashes_this_session:
@@ -626,7 +630,7 @@ def metadata_processor_worker(metadata_queue, s3_queue, path_queue, batch_size=5
                 metadata_batch.append(metadata)
                 sha_256_hashes_this_session.add(metadata['sha256_hash'])
             if len(metadata_batch) > 0:
-                new_metadata_batch, existing_metadata_batch = batch_check_existing_media_rows(metadata_batch)
+                new_metadata_batch, existing_metadata_batch = batch_check_existing_media_rows(metadata_batch, existing_hashes)
                 # print(len(new_metadata_batch), len(existing_metadata_batch))
                 for metadata_x in new_metadata_batch:
                     s3_queue.put(metadata_x)
@@ -640,28 +644,34 @@ def metadata_processor_worker(metadata_queue, s3_queue, path_queue, batch_size=5
             metadata_batch.append(metadata)
         
 
-def batch_check_existing_media_rows(unfiltered_metadata_batch):
-    with DatabaseConnector() as conn:
-        existing = pd.read_sql_query(
-            '''SELECT id, sha256_hash FROM media WHERE sha256_hash IN %s''', 
-            conn,
-            params=(tuple([psycopg2.Binary(d['sha256_hash']) for d in unfiltered_metadata_batch]),),
-        )
-        # print('%d existing out of %d' % (len(existing), len(unfiltered_metadata_batch)) )
+def batch_check_existing_media_rows(unfiltered_metadata_batch, existing_hashes):
+    '''
+    Somewhat vestigial - used to batch check against database, now just against set
+    '''
+    # with DatabaseConnector() as conn:
+    #     existing = pd.read_sql_query(
+    #         '''SELECT id, sha256_hash FROM media WHERE sha256_hash IN %s''', 
+    #         conn,
+    #         params=(tuple([psycopg2.Binary(d['sha256_hash']) for d in unfiltered_metadata_batch]),),
+    #     )
+    #     # print('%d existing out of %d' % (len(existing), len(unfiltered_metadata_batch)) )
 
-        # existing_keys = pd.read_sql_query(
-        #     '''SELECT * FROM keys WHERE key IN %s INNER JOIN media ON media.id=key.media_id''',
-        #     conn,
-        #     params=(tuple([d['fpath_relative'] for d in unfiltered_metadata_batch]),),
-        # )
+    #     # existing_keys = pd.read_sql_query(
+    #     #     '''SELECT * FROM keys WHERE key IN %s INNER JOIN media ON media.id=key.media_id''',
+    #     #     conn,
+    #     #     params=(tuple([d['fpath_relative'] for d in unfiltered_metadata_batch]),),
+    #     # )
 
-    new_metadata_batch = [d for d in unfiltered_metadata_batch if d['sha256_hash'] not in [bytes(b) for b in existing['sha256_hash'].values]]
-    existing_metadata_batch = [d for d in unfiltered_metadata_batch if d['sha256_hash'] in [bytes(b) for b in existing['sha256_hash'].values]]
+    # new_metadata_batch = [d for d in unfiltered_metadata_batch if d['sha256_hash'] not in [bytes(b) for b in existing['sha256_hash'].values]]
+    # existing_metadata_batch = [d for d in unfiltered_metadata_batch if d['sha256_hash'] in [bytes(b) for b in existing['sha256_hash'].values]]
+
+    new_metadata_batch = [d for d in unfiltered_metadata_batch if d['sha256_hash'] not in existing_hashes]
+    existing_metadata_batch = [d for d in unfiltered_metadata_batch if d['sha256_hash'] in existing_hashes]
 
     return (new_metadata_batch, existing_metadata_batch)
 
 
-def s3_upload_worker(s3_queue, path_queue):
+def s3_upload_worker(s3_queue, path_queue, s3_input_mode):
     session = boto3.session.Session(
         aws_access_key_id=config.access_key,
         aws_secret_access_key=config.secret_key,
@@ -677,7 +687,7 @@ def s3_upload_worker(s3_queue, path_queue):
         if metadata is None:
             break
 
-        if os.path.isfile(metadata['fpath']):
+        if not s3_input_mode and os.path.isfile(metadata['fpath']):
             try:
                 response = s3_client.upload_file(metadata['fpath'], config.s3_bucket_name, metadata['fpath_relative'])
             except botocore.exceptions.ClientError as e:
@@ -689,6 +699,7 @@ def s3_upload_worker(s3_queue, path_queue):
             thumb_key = fname + '-%dw_%dh' % (metadata['thumbnail']['thumbnail_width'], metadata['thumbnail']['thumbnail_height']) + extension
             try:
                 response = s3_client.upload_file(metadata['thumbnail']['thumbnail_path'], config.s3_bucket_name, thumb_key)
+                print('Uploaded thumbnail:', thumb_key)
                 os.remove(metadata['thumbnail']['thumbnail_path'])
             except botocore.exceptions.ClientError as e:
                 # logging.error(e)
