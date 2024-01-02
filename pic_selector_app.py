@@ -2,6 +2,7 @@ import os
 import math
 import calendar
 import datetime
+from dateutil import tz
 import pytz
 
 import flask
@@ -31,6 +32,8 @@ app.config['USER_ENABLE_EMAIL'] = False
 app.config['USER_ENABLE_USERNAME'] = True
 app.config['USER_REQUIRE_RETYPE_PASSWORD'] = False
 app.config['USER_ENABLE_REGISTER'] = False
+DB_TIME_ZONE = tz.gettz('UTC')
+LOCAL_TIME_ZONE = tz.gettz('America/Los_Angeles')
 db.init_app(app)
 
 # Setup Flask-User and specify the User data-model
@@ -110,7 +113,6 @@ def generate_signed_urls_helper(df, s3_key_col = 'thumbnail_key', url_col='thumb
         )
     )
     pd.set_option('display.max_colwidth', 200)
-    print(df.head())
     return df
 
 
@@ -238,7 +240,8 @@ def get_days_df(year, month, favs_only=True):
 
     df = pd.read_sql_query(
         '''
-        SELECT media.creation_time, media.media_type, media.height, media.width, media.s3_key, thumbnail.key as thumbnail_key, thumbnail.width as thumbnail_width, thumbnail.height as thumbnail_height, votes.vote_value, media.id as mediaid, q2.sum_all_votes, votes.user_id as votes_user_id
+        SELECT media.creation_time, media.media_type, media.height, media.width, media.s3_key, thumbnail.key as thumbnail_key, thumbnail.width as thumbnail_width, thumbnail.height as thumbnail_height, votes.vote_value, media.id as mediaid, q2.sum_all_votes, votes.user_id as votes_user_id,
+        media.utc_time
         from media
         JOIN thumbnail ON thumbnail.media_id=media.id
         LEFT JOIN votes on media.id = votes.media_id
@@ -261,7 +264,7 @@ def get_days_df(year, month, favs_only=True):
     )
     df['vote_matches_my_user_id'] = 0
     df.loc[df['votes_user_id'] == current_user_id, 'vote_matches_my_user_id'] = 1
-    df = df.sort_values(['creation_time', 'vote_matches_my_user_id'], ascending=[True, False])
+    df = df.sort_values(['creation_time', 'media_type', 'vote_matches_my_user_id'], ascending=[True, True, False])
     df = df.drop_duplicates('mediaid')
     df['vote_value'] = df['vote_value'].fillna(0)
     df.loc[(df['vote_matches_my_user_id'] == 0) & (df['vote_value'] != 0), 'vote_value'] = 0
@@ -310,7 +313,6 @@ def render_month(year, month, page, column_width=400, items_per_page=50, favs_on
     starting_i = (page - 1) * items_per_page
     ending_i = page * items_per_page + 1
 
-    # TODO: issue here with photoswipe URLs - they contain &amp; which is getting interpreted literally, needs to be not included
     media = generate_signed_urls_helper(media, s3_key_col='thumbnail_key', url_col='url')
     media = generate_signed_urls_helper(media, s3_key_col='s3_key', url_col='original_url')
     for index, row in media.iloc[starting_i : ending_i].iterrows():
@@ -324,6 +326,16 @@ def render_month(year, month, page, column_width=400, items_per_page=50, favs_on
         else:
             comma = ','
 
+        formatted_date = row['creation_time']
+        if row['utc_time']:
+            # Tell the datetime object that it's in UTC time zone since 
+            # datetime objects are 'naive' by default
+            formatted_date = formatted_date.replace(tzinfo=DB_TIME_ZONE)
+
+            # Convert time zone
+            formatted_date = formatted_date.astimezone(LOCAL_TIME_ZONE)
+        formatted_date = formatted_date.strftime("%b %d, %I:%M:%S %p")
+
         d = {
             'url': row['url'],
             'original_url': row['original_url'],
@@ -332,7 +344,7 @@ def render_month(year, month, page, column_width=400, items_per_page=50, favs_on
             'original_width': row['width'],
             'original_height': row['height'],
             'media_type': row['media_type'],
-            'formatted_date': row['creation_time'].strftime("%b %d, %I:%M:%S %p"),
+            'formatted_date': formatted_date,
             'comma': comma,
             'photoswipe_index': photoswipe_i,
             'vote_value': row['vote_value'],

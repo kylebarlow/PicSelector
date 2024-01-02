@@ -101,13 +101,17 @@ def process_video(fpath, max_thumbnail_height=400, max_thumbnail_samples=1000):
     sha_hash = file_hash.digest()
 
     date_time = None
-    zulu_time = False
+    zulu_time = None
+    if date_time is None:
+        date_time, zulu_time = date_time_from_fname(os.path.basename(fpath))
     original_tzinfo = None
-    if 'creation_time' in info:
+    if 'creation_time' in info and date_time is None:
         date_time = dateutil_parser.parse((info['creation_time'][0]))
         if isinstance(info['creation_time'][0], str) and len(info['creation_time'][0]) > 0 and info['creation_time'][0][-1].upper() == 'Z':
             zulu_time = True
             original_tzinfo = date_time.tzinfo
+        else:
+            zulu_time = False
 
     duration = None
     if 'duration' in info:
@@ -134,11 +138,12 @@ def process_video(fpath, max_thumbnail_height=400, max_thumbnail_samples=1000):
         except Exception:
             pass
 
-    if date_time and lat and lon and zulu_time:
-        tf = TimezoneFinder()
-        tz = pytz.timezone(tf.timezone_at(lng=lon, lat=lat))
-        date_time = date_time.astimezone(tz).replace(tzinfo=original_tzinfo)
-        print('Adjusted time', date_time)
+    # Commented out as I now want to save in UTC time
+    # if date_time and lat and lon and zulu_time:
+    #     tf = TimezoneFinder()
+    #     tz = pytz.timezone(tf.timezone_at(lng=lon, lat=lat))
+    #     date_time = date_time.astimezone(tz).replace(tzinfo=original_tzinfo)
+    #     print('Adjusted time', date_time)
 
     filesize = os.path.getsize(fpath)
 
@@ -204,6 +209,7 @@ def process_video(fpath, max_thumbnail_height=400, max_thumbnail_samples=1000):
         'size': filesize,
         'sha256_hash': sha_hash,
         'creation_time': date_time,
+        'utc_time': zulu_time,
         'media_type': 'video',
         'out_alt_filename': out_alt_filename,
         'thumbnail': {
@@ -326,42 +332,31 @@ def process_image(fpath, max_thumbnail_height=400, run_hashing=True):
         lat = None
         lon = None
 
-    date_time = set([value for key, value in exif_dict.items() if isinstance(key, str) and key.startswith('DateTime')])
-    if len(date_time) == 0:
-        date_time = None
-    else:
-        date_time = datetime.datetime.strptime(list(date_time)[0], '%Y:%m:%d %H:%M:%S')
+    date_time = None
+    utc_time = None
+    if date_time is None:
+        date_time, utc_time = date_time_from_fname(os.path.basename(fpath))
+
+    date_time_tags = set([value for key, value in exif_dict.items() if isinstance(key, str) and key.startswith('DateTime')])
+    if date_time is None and len(date_time_tags) > 0:
+        date_time = datetime.datetime.strptime(list(date_time_tags)[0], '%Y:%m:%d %H:%M:%S')
+        utc_time = False
 
     if date_time is None and 'GPSDateStamp' in geotags and 'GPSTimeStamp' in geotags:
         try:
             year, month, day = geotags['GPSDateStamp'].split(':')
             date_time = datetime.datetime(year=year, month=month, day=day, hour=geotags['GPSTimeStamp'][0], minute=geotags['GPSTimeStamp'][1], second=geotags['GPSTimeStamp'][2])
+            utc_time = False
         except Exception:
             pass
     if date_time is None and 'GPSDateStamp' in geotags:
         try:
             year, month, day = geotags['GPSDateStamp'].split(':')
             date_time = datetime.datetime(year=year, month=month, day=day)
+            utc_time = False
         except Exception:
             pass
-    if date_time is None:
-        try:
-            extension_length = len(fpath.split('.')[-1]) + 1
-            date_time = datetime.datetime.strptime(os.path.basename(fpath)[:-extension_length], r"%Y-%m-%d %H.%M.%S")
-        except Exception:
-            pass
-    if date_time is None:
-        try:
-            extension_length = len(fpath.split('.')[-1]) + 1
-            date_time = datetime.datetime.strptime(os.path.basename(fpath)[:-extension_length]+'000', r'PXL_%Y%m%d_%H%M%S%f')
-        except Exception:
-            pass
-    if date_time is None:
-        try:
-            extension_length = len(fpath.split('.')[-1]) + 1
-            date_time = dateutil_parser.parse(os.path.basename(fpath)[:-extension_length])
-        except Exception:
-            pass
+    
 
     max_size = (min(max_thumbnail_height*3, image.height), max_thumbnail_height)
     thumbnail = PIL.ImageOps.exif_transpose(image).copy()
@@ -387,6 +382,7 @@ def process_image(fpath, max_thumbnail_height=400, run_hashing=True):
         'size': sys.getsizeof(fdata),
         'sha256_hash': sha_hash,
         'creation_time': date_time,
+        'utc_time': utc_time,
         'media_type': 'image',
         'thumbnail': {
             'thumbnail_path': thumbnail_path,
@@ -438,6 +434,8 @@ class DirectoryMonitor():
         self.num_processing_threads = num_processing_threads
         self.check_existing_keys = check_existing_keys
         self.sub_keys_to_scan = sub_keys_to_scan
+        self.manager = multiprocessing.Manager()
+        self.image_exif_cache = self.manager.dict()
         if monitor_new:
             self.initialize_watchdogs()
             self.queue_combiner = multiprocessing.Process(target=combine_queues, args=(self.queue, self.watchdog_queue))
@@ -563,15 +561,10 @@ def media_processor_worker(file_queue, metadata_queue, niceness, root_dir, start
         if start_date is not None:
             fpath = event.src_path
             # First try filename
-            fname = os.path.splitext(os.path.basename(fpath))[0]
-            try:
-                file_creation_time = datetime.datetime.strptime(fname, r'%Y-%m-%d %H.%M.%S')
-            except ValueError:
-                try:
-                    file_creation_time = datetime.datetime.strptime(fname+'000', r'PXL_%Y%m%d_%H%M%S%f')
-                except ValueError:
-                    # Fallback to file creation time
-                    file_creation_time = datetime.datetime.fromtimestamp(os.path.getctime(fpath))
+            fname = os.path.basename(fpath)
+            file_creation_time, _ = date_time_from_fname(fname)
+            if file_creation_time is None:
+                file_creation_time = datetime.datetime.fromtimestamp(os.path.getctime(fpath))
             if file_creation_time < start_date:
                 continue
 
@@ -760,13 +753,14 @@ def s3_upload_worker(s3_queue, path_queue, s3_input_mode):
 
         with DatabaseConnector() as conn:
             conn.execute(
-                '''INSERT INTO media (sha256_hash, creation_time, media_type, file_size, height, width, latitude, longitude, s3_key)
-                VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                '''INSERT INTO media (sha256_hash, creation_time, media_type, file_size, height, width, latitude, longitude, s3_key, utc_time)
+                VALUES(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 ;''',
                 (
                     metadata['sha256_hash'], metadata['creation_time'], media_type, metadata['size'],
                     metadata['height'], metadata['width'], metadata['lat'], metadata['lon'],
                     media_file_key_rel,
+                    metadata['utc_time'],
                 ),
             )
             existing = pd.read_sql_query(
@@ -829,6 +823,32 @@ def combine_queues(main_queue, secondary_queue):
         main_queue.put(secondary_queue.get())
 
 
+def date_time_from_fname(fname):
+    fname_no_ext = fname.split('.')[0]
+
+    def try_parse(s, f_string):
+        try:
+            return datetime.datetime.strptime(s, f_string)
+        except Exception:
+            return None
+    date_time = None
+    if date_time is None:
+        date_time = try_parse(fname_no_ext+'000', r'PXL_%Y%m%d_%H%M%S%f')
+    if date_time is None:
+        date_time = try_parse(fname_no_ext, r"%Y-%m-%d %H.%M.%S")
+    if date_time is None:
+        try:
+            date_time = dateutil_parser.parse(fname_no_ext)
+        except Exception:
+            pass
+    # print('Date time from filename', fname, fname_no_ext, date_time)
+    if date_time is None:
+        utc_time = None
+    else:
+        utc_time = True
+    return (date_time, utc_time)
+
+
 def list_s3(sub_key, queue, existing_hashes, existing_keys, path_queue):
     session = boto3.session.Session(
         aws_access_key_id=config.access_key,
@@ -873,7 +893,6 @@ def list_s3(sub_key, queue, existing_hashes, existing_keys, path_queue):
 
     # Download files to local temporary cache
     hash_match_count = 0
-    # new_keys = [x for x in new_keys if 'MP' in x and '202312' in x][:1]  # TMP
     for s3_key in new_keys:
         while get_dir_size(S3_LOCAL_CACHE_PATH) > 10**9:  # 1 GB in bytes
             time.sleep(5)
