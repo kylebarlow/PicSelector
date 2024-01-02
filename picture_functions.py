@@ -8,6 +8,7 @@ import multiprocessing
 import tempfile
 import argparse
 import re
+import pathlib
 from pprint import pprint
 import sqlalchemy
 
@@ -64,13 +65,24 @@ def generate_thumbnail(in_filename, out_filename, time, width):
         raise
 
 
+def generate_alt_video(in_filename, out_filename):
+    assert(out_filename.endswith('.webm'))
+    (
+        ffmpeg
+        .input(in_filename)
+        .output(out_filename, vcodec='libsvtav1', crf=32)
+        .run()
+    )
+    assert(os.path.isfile(out_filename))
+    # print('Generated alt video:', out_filename)
+
+
 def make_ss_time(time_in_s):
     return str(datetime.timedelta(seconds=time_in_s))
 
 
 def process_video(fpath, max_thumbnail_height=400, max_thumbnail_samples=1000):
-    info = find_probe_info(ffmpeg.probe(fpath), desired_keys=['duration', 'location', 'creation_time', 'height', 'width'])
-    # pprint(ffmpeg.probe(fpath))
+    info = find_probe_info(ffmpeg.probe(fpath), desired_keys=['duration', 'location', 'creation_time', 'height', 'width', 'codec_name'])
 
     with open(fpath, "rb") as f:
         file_hash = hashlib.sha256()
@@ -147,7 +159,7 @@ def process_video(fpath, max_thumbnail_height=400, max_thumbnail_samples=1000):
         for thumbnail_path in thumbnail_paths:
             image = PIL.Image.open(thumbnail_path)
             ahashes.append(imagehash.average_hash(image))
-        
+
         distances = []
         for i, ahash_i in enumerate(ahashes):
             distances.append((np.mean([ahash_i-ahash_j for ahash_j in ahashes]), i))
@@ -168,6 +180,12 @@ def process_video(fpath, max_thumbnail_height=400, max_thumbnail_samples=1000):
         thumbnail_height = image.height
         thumbnail_size = os.path.getsize(best_thumbnail_path)
 
+    if ('hevc' in info['codec_name'] or info['codec_name'] == 'hevc') or (info['codec_name'] != 'av1'):
+        out_alt_filename = os.path.join(os.path.dirname(fpath), pathlib.Path(fpath).stem + '_ALTCODEC.webm')
+        generate_alt_video(fpath, out_alt_filename)
+    else:
+        out_alt_filename = None
+
     return {
         'lat': lat,
         'lon': lon,
@@ -177,6 +195,7 @@ def process_video(fpath, max_thumbnail_height=400, max_thumbnail_samples=1000):
         'sha256_hash': sha_hash,
         'creation_time': date_time,
         'media_type': 'video',
+        'out_alt_filename': out_alt_filename,
         'thumbnail': {
             'thumbnail_path': best_thumbnail_path,
             'thumbnail_width': thumbnail_width,
@@ -381,7 +400,7 @@ class DirectoryMonitor():
         check_existing_hashes=False,
         check_existing_keys=False,
         add_existing_files=True, monitor_new=True, max_file_queue_size=10, 
-        num_processing_threads=4, processing_niceness=10, max_metadata_queue_size=5000, max_s3_queue_size=1000, num_s3_threads=1,
+        num_processing_threads=4, processing_niceness=10, max_metadata_queue_size=10, max_s3_queue_size=100, num_s3_threads=1,
     ):
         if not os.path.isdir(S3_LOCAL_CACHE_PATH):
             os.makedirs(S3_LOCAL_CACHE_PATH)
@@ -711,6 +730,24 @@ def s3_upload_worker(s3_queue, path_queue, s3_input_mode):
         elif metadata['media_type'] == 'video':
             media_type = 1
 
+        # Logic to deal with encoded videos
+        if metadata['media_type'] == 'video' and metadata['out_alt_filename'] is not None:
+            media_file_key = metadata['out_alt_filename']
+            media_file_key_rel = os.path.relpath(media_file_key, S3_LOCAL_CACHE_PATH)
+            video_original_key = metadata['fpath_relative']
+            # Upload alt video to S3
+            try:
+                response = s3_client.upload_file(metadata['out_alt_filename'], config.s3_bucket_name, media_file_key_rel)
+                print('Uploaded alt video:', media_file_key_rel)
+                os.remove(media_file_key)
+            except botocore.exceptions.ClientError as e:
+                # logging.error(e)
+                continue
+        else:
+            media_file_key = metadata['fpath_relative']
+            media_file_key_rel = media_file_key
+            video_original_key = None
+
         with DatabaseConnector() as conn:
             conn.execute(
                 '''INSERT INTO media (sha256_hash, creation_time, media_type, file_size, height, width, latitude, longitude, s3_key)
@@ -719,7 +756,7 @@ def s3_upload_worker(s3_queue, path_queue, s3_input_mode):
                 (
                     metadata['sha256_hash'], metadata['creation_time'], media_type, metadata['size'],
                     metadata['height'], metadata['width'], metadata['lat'], metadata['lon'],
-                    metadata['fpath_relative'],
+                    media_file_key_rel,
                 ),
             )
             existing = pd.read_sql_query(
@@ -741,10 +778,10 @@ def s3_upload_worker(s3_queue, path_queue, s3_input_mode):
 
             if metadata['media_type'] == 'video':
                 conn.execute(
-                    '''INSERT INTO videos (id, duration)
-                    VALUES(%s, %s);''',
+                    '''INSERT INTO videos (id, duration, original_key)
+                    VALUES(%s, %s, %s);''',
                     (
-                        media_id, metadata['video_only']['duration'],
+                        media_id, metadata['video_only']['duration'], video_original_key,
                     ),
                 )
 
@@ -820,12 +857,13 @@ def list_s3(sub_key, queue, existing_hashes, existing_keys, path_queue):
 
     new_keys = non_thumb_s3_keys - existing_keys
     print('{:d} new files in {:s} out of {:d} total'.format(len(new_keys), sub_key, len(non_thumb_s3_keys)))
-    # print(file_list)
+    # print(file_list) 
     # print(existing_keys)
     # print(sorted(new_files))
 
     # Download files to local temporary cache
     hash_match_count = 0
+    new_keys = [x for x in new_keys if 'PXL_20231116_024214562.mp4' in x]  # TMP
     for s3_key in new_keys:
         while get_dir_size(S3_LOCAL_CACHE_PATH) > 10**9:  # 1 GB in bytes
             time.sleep(5)
