@@ -9,6 +9,7 @@ import tempfile
 import argparse
 import re
 import pathlib
+import shutil
 from pprint import pprint
 import sqlalchemy
 
@@ -67,12 +68,21 @@ def generate_thumbnail(in_filename, out_filename, time, width):
 
 def generate_alt_video(in_filename, out_filename):
     assert(out_filename.endswith('.webm'))
-    (
-        ffmpeg
-        .input(in_filename)
-        .output(out_filename, vcodec='libsvtav1', crf=32)
-        .run()
-    )
+    if 'MPDUMP' in in_filename:
+        # Separate arguments in order to make sure we pick stream 0 in motion photo mp4s, as those are a bit weird
+        (
+            ffmpeg
+            .input(in_filename)
+            .output(out_filename, vcodec='libsvtav1', crf=32, map='0:v:0')
+            .run()
+        )
+    else:
+        (
+            ffmpeg
+            .input(in_filename)
+            .output(out_filename, vcodec='libsvtav1', crf=32)
+            .run()
+        )
     assert(os.path.isfile(out_filename))
     # print('Generated alt video:', out_filename)
 
@@ -706,7 +716,7 @@ def s3_upload_worker(s3_queue, path_queue, s3_input_mode):
         if metadata is None:
             break
 
-        if not s3_input_mode and os.path.isfile(metadata['fpath']):
+        if (not s3_input_mode and os.path.isfile(metadata['fpath'])) or (s3_input_mode and '_MPDUMP' in metadata['fpath']):  # We do need to upload if a new MPDUMP file
             try:
                 response = s3_client.upload_file(metadata['fpath'], config.s3_bucket_name, metadata['fpath_relative'])
             except botocore.exceptions.ClientError as e:
@@ -848,7 +858,7 @@ def list_s3(sub_key, queue, existing_hashes, existing_keys, path_queue):
     non_thumb_s3_keys = set()
     for f in file_list:
         m = re.search(r'\d+w[_]\d+h', f)  # Thumbnails already created
-        if not m and f[-1] != '/':
+        if not m and f[-1] != '/' and '_ALTCODEC' not in f and '_MPDUMP' not in f:  # Also filter out directories and alt, non-original videos
             non_thumb_s3_keys.add(f)
 
     # existing_fnames_to_keys = {}
@@ -863,7 +873,7 @@ def list_s3(sub_key, queue, existing_hashes, existing_keys, path_queue):
 
     # Download files to local temporary cache
     hash_match_count = 0
-    new_keys = [x for x in new_keys if 'PXL_20231116_024214562.mp4' in x]  # TMP
+    # new_keys = [x for x in new_keys if 'MP' in x and '202312' in x][:1]  # TMP
     for s3_key in new_keys:
         while get_dir_size(S3_LOCAL_CACHE_PATH) > 10**9:  # 1 GB in bytes
             time.sleep(5)
@@ -885,10 +895,42 @@ def list_s3(sub_key, queue, existing_hashes, existing_keys, path_queue):
             path_queue.put((sha_hash, s3_key, local_path))
             hash_match_count += 1
         else:
+            if '.MP.' in local_path:
+                process_motion_photo(local_path, queue)
             queue.put(watchdog.events.FileCreatedEvent(os.path.abspath(local_path)))
 
     if hash_match_count > 0:
         print('Total hash match count in {}:'.format(sub_key), hash_match_count)
+
+
+def process_motion_photo(fpath, queue):
+    # Motion Photo processing
+    initial_keys = ['xmpmeta', 'RDF', 'Description', 'Directory', 'Seq', 'li']
+    with open(fpath, 'rb') as f:
+        fdata = f.read()
+    image = PIL.Image.open(io.BytesIO(fdata))
+    current_d = image.getxmp()
+    for key in initial_keys:
+        if key not in current_d:
+            return
+        else:
+            current_d = current_d[key]
+    length_offset = None
+    for current_d in current_d:
+        if 'Item' in current_d:
+            if 'Mime' in current_d['Item']:
+                if current_d['Item']['Mime'] == 'video/mp4':
+                    length_offset = int(current_d['Item']['Length'])
+                    break
+    if length_offset is None:
+        return
+    new_fpath = os.path.join(os.path.dirname(fpath), pathlib.Path(fpath).stem + '_MPDUMP.mp4')
+    with open(fpath, 'rb') as fin:
+        fin.seek(-1 * length_offset, os.SEEK_END)  # Read last length_offset bytes
+        with open(new_fpath, 'wb') as fout:
+            fout.write(fin.read())
+    print('Motion photo dump:', new_fpath)
+    queue.put(watchdog.events.FileCreatedEvent(os.path.abspath(new_fpath)))
 
 
 def get_file_hash_helper(fpath):
