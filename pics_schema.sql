@@ -2,8 +2,8 @@
 -- PostgreSQL database dump
 --
 
--- Dumped from database version 12.11 (Ubuntu 12.11-0ubuntu0.20.04.1)
--- Dumped by pg_dump version 14.9 (Ubuntu 14.9-0ubuntu0.22.04.1)
+-- Dumped from database version 15.5 (Debian 15.5-1.pgdg120+1)
+-- Dumped by pg_dump version 15.5 (Debian 15.5-1.pgdg120+1)
 
 SET statement_timeout = 0;
 SET lock_timeout = 0;
@@ -16,12 +16,53 @@ SET xmloption = content;
 SET client_min_messages = warning;
 SET row_security = off;
 
+ALTER TABLE IF EXISTS ONLY public.votes DROP CONSTRAINT IF EXISTS votes_users_id_fk;
+ALTER TABLE IF EXISTS ONLY public.votes DROP CONSTRAINT IF EXISTS votes_media_id_fk;
+ALTER TABLE IF EXISTS ONLY public.videos DROP CONSTRAINT IF EXISTS videos_media_id_fk;
+ALTER TABLE IF EXISTS ONLY public.user_roles DROP CONSTRAINT IF EXISTS user_roles_user_id_fkey;
+ALTER TABLE IF EXISTS ONLY public.user_roles DROP CONSTRAINT IF EXISTS user_roles_role_id_fkey;
+ALTER TABLE IF EXISTS ONLY public.thumbnail DROP CONSTRAINT IF EXISTS thumbnail_media_id_fk;
+ALTER TABLE IF EXISTS ONLY public.keys DROP CONSTRAINT IF EXISTS keys_media_id_fk;
+ALTER TABLE IF EXISTS ONLY public.images DROP CONSTRAINT IF EXISTS images_media_id_fk;
+DROP INDEX IF EXISTS public.thumbnail_id_uindex;
+DROP INDEX IF EXISTS public.media_sha256_hash_uindex;
+DROP INDEX IF EXISTS public.media_id_uindex;
+DROP INDEX IF EXISTS public.creation_time__index;
+ALTER TABLE IF EXISTS ONLY public.votes DROP CONSTRAINT IF EXISTS votes_pk;
+ALTER TABLE IF EXISTS ONLY public.videos DROP CONSTRAINT IF EXISTS videos_pk;
+ALTER TABLE IF EXISTS ONLY public.users DROP CONSTRAINT IF EXISTS users_username_key;
+ALTER TABLE IF EXISTS ONLY public.users DROP CONSTRAINT IF EXISTS users_pkey;
+ALTER TABLE IF EXISTS ONLY public.user_roles DROP CONSTRAINT IF EXISTS user_roles_pkey;
+ALTER TABLE IF EXISTS ONLY public.thumbnail DROP CONSTRAINT IF EXISTS thumbnail_pk;
+ALTER TABLE IF EXISTS ONLY public.roles DROP CONSTRAINT IF EXISTS roles_pkey;
+ALTER TABLE IF EXISTS ONLY public.roles DROP CONSTRAINT IF EXISTS roles_name_key;
+ALTER TABLE IF EXISTS ONLY public.media DROP CONSTRAINT IF EXISTS media_pk;
+ALTER TABLE IF EXISTS ONLY public.keys DROP CONSTRAINT IF EXISTS keys_pk;
+ALTER TABLE IF EXISTS ONLY public.images DROP CONSTRAINT IF EXISTS images_pk;
+ALTER TABLE IF EXISTS public.users ALTER COLUMN id DROP DEFAULT;
+ALTER TABLE IF EXISTS public.user_roles ALTER COLUMN id DROP DEFAULT;
+ALTER TABLE IF EXISTS public.thumbnail ALTER COLUMN id DROP DEFAULT;
+ALTER TABLE IF EXISTS public.roles ALTER COLUMN id DROP DEFAULT;
+ALTER TABLE IF EXISTS public.media ALTER COLUMN id DROP DEFAULT;
+ALTER TABLE IF EXISTS public.keys ALTER COLUMN key_id DROP DEFAULT;
+DROP TABLE IF EXISTS public.votes;
+DROP TABLE IF EXISTS public.videos;
+DROP SEQUENCE IF EXISTS public.users_id_seq;
+DROP TABLE IF EXISTS public.users;
+DROP SEQUENCE IF EXISTS public.user_roles_id_seq;
+DROP TABLE IF EXISTS public.user_roles;
+DROP SEQUENCE IF EXISTS public.thumbnail_id_seq;
+DROP TABLE IF EXISTS public.thumbnail;
+DROP SEQUENCE IF EXISTS public.roles_id_seq;
+DROP TABLE IF EXISTS public.roles;
+DROP SEQUENCE IF EXISTS public.media_id_seq;
+DROP TABLE IF EXISTS public.media;
+DROP SEQUENCE IF EXISTS public.keys_key_id_seq;
+DROP TABLE IF EXISTS public.keys;
+DROP TABLE IF EXISTS public.images;
 SET default_tablespace = '';
 
 SET default_table_access_method = heap;
-
--- Line manually added in, not included in the dump
-\connect pics
 
 --
 -- Name: images; Type: TABLE; Schema: public; Owner: pics
@@ -95,7 +136,8 @@ CREATE TABLE public.media (
     width integer NOT NULL,
     latitude double precision,
     longitude double precision,
-    s3_key character varying
+    s3_key character varying,
+    utc_time boolean
 );
 
 
@@ -276,7 +318,8 @@ ALTER SEQUENCE public.users_id_seq OWNED BY public.users.id;
 
 CREATE TABLE public.videos (
     id integer NOT NULL,
-    duration real NOT NULL
+    duration real NOT NULL,
+    original_key character varying
 );
 
 
