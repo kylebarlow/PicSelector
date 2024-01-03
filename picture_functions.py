@@ -68,21 +68,25 @@ def generate_thumbnail(in_filename, out_filename, time, width):
 
 def generate_alt_video(in_filename, out_filename):
     assert(out_filename.endswith('.webm'))
-    if 'MPDUMP' in in_filename:
-        # Separate arguments in order to make sure we pick stream 0 in motion photo mp4s, as those are a bit weird
-        (
-            ffmpeg
-            .input(in_filename)
-            .output(out_filename, vcodec='libsvtav1', crf=32, map='0:v:0')
-            .run()
-        )
-    else:
-        (
-            ffmpeg
-            .input(in_filename)
-            .output(out_filename, vcodec='libsvtav1', crf=32)
-            .run()
-        )
+    try:
+        if 'MPDUMP' in in_filename:
+            # Separate arguments in order to make sure we pick stream 0 in motion photo mp4s, as those are a bit weird
+            (
+                ffmpeg
+                .input(in_filename)
+                .output(out_filename, vcodec='libsvtav1', crf=32, map='0:v:0')
+                .run()
+            )
+        else:
+            (
+                ffmpeg
+                .input(in_filename)
+                .output(out_filename, vcodec='libsvtav1', crf=32)
+                .run()
+            )
+    except ffmpeg.Error as e:
+        print(e.stderr.decode(), file=sys.stderr)
+        raise
     assert(os.path.isfile(out_filename))
     # print('Generated alt video:', out_filename)
 
