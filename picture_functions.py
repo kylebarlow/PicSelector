@@ -405,8 +405,8 @@ class DirectoryMonitor():
         remove_after_upload=False,
         check_existing_hashes=False,
         check_existing_keys=False,
-        add_existing_files=True, monitor_new=True, max_file_queue_size=10, 
-        num_processing_threads=4, processing_niceness=10, max_metadata_queue_size=10, max_s3_queue_size=100, num_s3_threads=1,
+        add_existing_files=True, monitor_new=True, max_file_queue_size=5,
+        num_processing_threads=4, processing_niceness=10, max_metadata_queue_size=10, max_s3_queue_size=10, num_s3_threads=1,
     ):
         if not os.path.isdir(S3_LOCAL_CACHE_PATH):
             os.makedirs(S3_LOCAL_CACHE_PATH)
