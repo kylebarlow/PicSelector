@@ -43,13 +43,15 @@ user_manager = UserManager(app, db, User)
 @login_required
 def home_page():
     df = pd.read_sql_query('''
-        SELECT EXTRACT(YEAR FROM creation_time) as year, EXTRACT(MONTH FROM creation_time) as month, EXTRACT(DAY FROM creation_time) as day, creation_time, thumbnail.key as thumbnail_key, thumbnail.width as thumbnail_width, thumbnail.height as thumbnail_height, SUM(votes.vote_value) AS sum_votes, media.id as mediaid
+        SELECT creation_time, thumbnail.key as thumbnail_key, thumbnail.width as thumbnail_width, thumbnail.height as thumbnail_height, SUM(votes.vote_value) AS sum_votes, media.id as mediaid
         from media
         JOIN thumbnail ON thumbnail.media_id=media.id
         LEFT JOIN votes on media.id = votes.media_id
-        WHERE media_type = 0 AND EXTRACT(YEAR FROM creation_time) IS NOT NULL
+        WHERE media_type = 0 AND creation_time IS NOT NULL
         GROUP BY mediaid, thumbnail_key, thumbnail_width, thumbnail_height
     ''', db.engine)
+    df = adjust_utc_time_zone_to_local(df, add_year_month_day=True)
+
     df = df.loc[~df['year'].isna()]
     df['randcol'] = np.random.random(size=df.shape[0])
     df['sum_votes'] = df['sum_votes'].fillna(0)
@@ -63,7 +65,7 @@ def home_page():
     df_fav_years['year_link'] = df_fav_years['year'].apply(lambda year: flask.url_for('fav_year_gallery', year=year))
     df_fav_years = generate_signed_urls_helper(df_fav_years)
 
-    local_time = pytz.timezone('UTC').localize(datetime.datetime.utcnow()).astimezone(pytz.timezone('America/Los_Angeles'))
+    local_time = pytz.timezone('UTC').localize(datetime.datetime.utcnow()).astimezone(pytz.timezone(LOCAL_TIME_ZONE))
     df_day = df.loc[(df['sum_votes'] > 0) & (df['month'] == local_time.month) & (df['day'] == local_time.day) & (df['year'] < local_time.year)].drop_duplicates('year')
     df_day = generate_signed_urls_helper(df_day)
     df_day['display_time'] = df_day['creation_time'].apply(lambda x: x.strftime('%Y, %A'))
@@ -178,16 +180,19 @@ def render_year(year, favs_only=True):
 
 def get_months_df(year, favs_only=True):
     df = pd.read_sql_query('''
-        SELECT EXTRACT(MONTH FROM creation_time) as month, creation_time, thumbnail.key as thumbnail_key, thumbnail.width as thumbnail_width, thumbnail.height as thumbnail_height, SUM(votes.vote_value) AS sum_votes, media.id as mediaid
+        SELECT creation_time, thumbnail.key as thumbnail_key, thumbnail.width as thumbnail_width, thumbnail.height as thumbnail_height, SUM(votes.vote_value) AS sum_votes, media.id as mediaid
         from media
         JOIN thumbnail ON thumbnail.media_id=media.id
         LEFT JOIN votes on media.id = votes.media_id
         WHERE media_type = 0 AND EXTRACT(MONTH FROM creation_time) IS NOT NULL
-        AND creation_time >= '%d-01-01 00:00:00'
-        AND creation_time <= '%d-12-31 23:59:59'
+        AND creation_time >= '%d-12-30 00:00:00'
+        AND creation_time <= '%d-01-02 23:59:59'
         GROUP BY mediaid, thumbnail_key, thumbnail_width, thumbnail_height
-    ''' % (int(year), int(year)), db.engine)
-    df = df.loc[~df['month'].isna()]
+    ''' % (int(year)-1, int(year)+1), db.engine)  # Initial year filtering with buffer for UTC time
+    df = adjust_utc_time_zone_to_local(df, add_year_month_day=True)
+    # Next year filter by local time conversion columns
+    df = df.loc[(df['year'] == year)]
+    df = df.loc[~df['month'].isna()].copy()
     df['randcol'] = np.random.random(size=df.shape[0])
     df['sum_votes'] = df['sum_votes'].fillna(0)
     df = df.sort_values(['month', 'sum_votes', 'randcol'], ascending=[True, False, True])
@@ -236,6 +241,9 @@ def fav_month_gallery_page(year, month, page):
 def get_days_df(year, month, favs_only=True):
     this_month_start = datetime.datetime(year, month, 1)
     next_month_start = (this_month_start + datetime.timedelta(days=calendar.monthrange(year, month)[1] + 5)).replace(day=1)
+    # Define fuzzy time boudnaries here for query with UTC time allowance
+    this_month_start_fuzzy = this_month_start - datetime.timedelta(hours=26)
+    next_month_start_fuzzy = next_month_start + datetime.timedelta(hours=26)
     current_user_id = current_user.id
 
     df = pd.read_sql_query(
@@ -259,9 +267,12 @@ def get_days_df(year, month, favs_only=True):
         ''',
         db.engine,
         params=(
-            this_month_start, next_month_start, this_month_start, next_month_start,
+            this_month_start_fuzzy, next_month_start_fuzzy, this_month_start_fuzzy, next_month_start_fuzzy,
         ),
     )
+    df = adjust_utc_time_zone_to_local(df, add_year_month_day=False)
+    # Filter on local time adjusted time range
+    df = df.loc[(df['creation_time'] >= this_month_start) & (df['creation_time'] <= next_month_start)].copy()
     df['vote_matches_my_user_id'] = 0
     df.loc[df['votes_user_id'] == current_user_id, 'vote_matches_my_user_id'] = 1
     df = df.sort_values(['creation_time', 'media_type', 'vote_matches_my_user_id'], ascending=[True, True, False])
@@ -272,6 +283,38 @@ def get_days_df(year, month, favs_only=True):
     if favs_only:
         df = df.loc[df['sum_all_votes'] > 0]
 
+    return df
+
+
+def adjust_utc_time_zone_to_local(df, time_col='creation_time', utc_col='utc_time', add_year_month_day=False):
+    new_time_col = []
+    formatted_time_col = []
+    year_col = []
+    month_col = []
+    day_col = []
+    for _, row in df.iterrows():
+        dt = row[time_col]
+        if row[utc_col]:
+            # Tell the datetime object that it's in UTC time zone since
+            # datetime objects are 'naive' by default
+            dt = dt.replace(tzinfo=DB_TIME_ZONE)
+
+            # Convert time zone
+            dt = dt.astimezone(LOCAL_TIME_ZONE)
+        # dt = dt.strftime("%b %d, %I:%M:%S %p")
+        if add_year_month_day:
+            year_col.append(dt.year)
+            month_col.append(dt.month)
+            day_col.append(dt.day)
+        new_time_col.append(dt)
+        formatted_time_col.append(dt.strftime("%b %d, %I:%M:%S %p"))
+    df['original_'+time_col] = df[time_col]
+    df[time_col] = new_time_col
+    df['formatted_time'] = formatted_time_col
+    if add_year_month_day:
+        df['year'] = year_col
+        df['month'] = month_col
+        df['day'] = day_col
     return df
 
 
@@ -313,9 +356,11 @@ def render_month(year, month, page, column_width=400, items_per_page=50, favs_on
     starting_i = (page - 1) * items_per_page
     ending_i = page * items_per_page + 1
 
+    media = media.iloc[starting_i:ending_i].copy()
     media = generate_signed_urls_helper(media, s3_key_col='thumbnail_key', url_col='url')
     media = generate_signed_urls_helper(media, s3_key_col='s3_key', url_col='original_url')
-    for index, row in media.iloc[starting_i : ending_i].iterrows():
+
+    for index, row in media.iterrows():
         # width = min(column_width, row['width'])
         # if width == row['width']:
         #     height = row['height']
@@ -326,16 +371,6 @@ def render_month(year, month, page, column_width=400, items_per_page=50, favs_on
         else:
             comma = ','
 
-        formatted_date = row['creation_time']
-        if row['utc_time']:
-            # Tell the datetime object that it's in UTC time zone since 
-            # datetime objects are 'naive' by default
-            formatted_date = formatted_date.replace(tzinfo=DB_TIME_ZONE)
-
-            # Convert time zone
-            formatted_date = formatted_date.astimezone(LOCAL_TIME_ZONE)
-        formatted_date = formatted_date.strftime("%b %d, %I:%M:%S %p")
-
         d = {
             'url': row['url'],
             'original_url': row['original_url'],
@@ -344,7 +379,7 @@ def render_month(year, month, page, column_width=400, items_per_page=50, favs_on
             'original_width': row['width'],
             'original_height': row['height'],
             'media_type': row['media_type'],
-            'formatted_date': formatted_date,
+            'formatted_date': row['formatted_time'],
             'comma': comma,
             'photoswipe_index': photoswipe_i,
             'vote_value': row['vote_value'],
@@ -358,7 +393,7 @@ def render_month(year, month, page, column_width=400, items_per_page=50, favs_on
             photoswipe_i += 1
             d['video_type'] = ''
         thumbnails.append(d)
-    
+
     # TODO: don't link to non-existent month pages (pages with no content)
 
     if next_month_start > datetime.datetime.now():
