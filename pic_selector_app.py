@@ -33,7 +33,8 @@ app.config['USER_ENABLE_USERNAME'] = True
 app.config['USER_REQUIRE_RETYPE_PASSWORD'] = False
 app.config['USER_ENABLE_REGISTER'] = False
 DB_TIME_ZONE = tz.gettz('UTC')
-LOCAL_TIME_ZONE = tz.gettz('America/Los_Angeles')
+LOCAL_TIME_ZONE_STR = 'America/Los_Angeles'
+LOCAL_TIME_ZONE = tz.gettz(LOCAL_TIME_ZONE_STR)
 db.init_app(app)
 
 # Setup Flask-User and specify the User data-model
@@ -65,7 +66,7 @@ def home_page():
     df_fav_years['year_link'] = df_fav_years['year'].apply(lambda year: flask.url_for('fav_year_gallery', year=year))
     df_fav_years = generate_signed_urls_helper(df_fav_years)
 
-    local_time = pytz.timezone('UTC').localize(datetime.datetime.utcnow()).astimezone(pytz.timezone(LOCAL_TIME_ZONE))
+    local_time = pytz.timezone('UTC').localize(datetime.datetime.utcnow()).astimezone(pytz.timezone(LOCAL_TIME_ZONE_STR))
     df_day = df.loc[(df['sum_votes'] > 0) & (df['month'] == local_time.month) & (df['day'] == local_time.day) & (df['year'] < local_time.year)].drop_duplicates('year')
     df_day = generate_signed_urls_helper(df_day)
     df_day['display_time'] = df_day['creation_time'].apply(lambda x: x.strftime('%Y, %A'))
