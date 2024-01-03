@@ -1,7 +1,7 @@
 version: "3.3"
 services:
   pic_daemon:
-    build: 
+    build:
       context: .
       dockerfile: flask.dockerfile
     volumes:
@@ -9,6 +9,6 @@ services:
     restart: always
     env_file:
       - .env
-    depends_on:
-      - db
+    # depends_on:
+    #   - db
     command: /webwork/run_pic_functions.sh
