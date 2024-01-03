@@ -43,7 +43,7 @@ user_manager = UserManager(app, db, User)
 @login_required
 def home_page():
     df = pd.read_sql_query('''
-        SELECT creation_time, thumbnail.key as thumbnail_key, thumbnail.width as thumbnail_width, thumbnail.height as thumbnail_height, SUM(votes.vote_value) AS sum_votes, media.id as mediaid
+        SELECT creation_time, thumbnail.key as thumbnail_key, thumbnail.width as thumbnail_width, thumbnail.height as thumbnail_height, SUM(votes.vote_value) AS sum_votes, media.id as mediaid, media.utc_time
         from media
         JOIN thumbnail ON thumbnail.media_id=media.id
         LEFT JOIN votes on media.id = votes.media_id
@@ -180,7 +180,7 @@ def render_year(year, favs_only=True):
 
 def get_months_df(year, favs_only=True):
     df = pd.read_sql_query('''
-        SELECT creation_time, thumbnail.key as thumbnail_key, thumbnail.width as thumbnail_width, thumbnail.height as thumbnail_height, SUM(votes.vote_value) AS sum_votes, media.id as mediaid
+        SELECT creation_time, thumbnail.key as thumbnail_key, thumbnail.width as thumbnail_width, thumbnail.height as thumbnail_height, SUM(votes.vote_value) AS sum_votes, media.id as mediaid, media.utc_time
         from media
         JOIN thumbnail ON thumbnail.media_id=media.id
         LEFT JOIN votes on media.id = votes.media_id
