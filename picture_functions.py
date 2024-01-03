@@ -39,6 +39,7 @@ import botocore
 import botocore.exceptions
 
 S3_LOCAL_CACHE_PATH = '/tmp/pic_selector_local_s3_cache'
+S3_PREEXISTING_CACHE_PATH = '/tmp/local_s3_cache'
 
 def process_media_file(event):
     fpath = event.src_path
@@ -853,7 +854,7 @@ def date_time_from_fname(fname):
     return (date_time, utc_time)
 
 
-def list_s3(sub_key, queue, existing_hashes, existing_keys, path_queue):
+def list_s3(sub_key, queue, existing_hashes, existing_keys, path_queue, only_use_pre_cache=True):
     session = boto3.session.Session(
         aws_access_key_id=config.access_key,
         aws_secret_access_key=config.secret_key,
@@ -898,19 +899,31 @@ def list_s3(sub_key, queue, existing_hashes, existing_keys, path_queue):
     # Download files to local temporary cache
     hash_match_count = 0
     for s3_key in new_keys:
-        while get_dir_size(S3_LOCAL_CACHE_PATH) > 10**9:  # 1 GB in bytes
-            time.sleep(5)
+        # while get_dir_size(S3_LOCAL_CACHE_PATH) > 10*10**9:  # 10 GB in bytes
+        #     time.sleep(5)
         local_path = os.path.join(S3_LOCAL_CACHE_PATH, s3_key)
         parent_dir = os.path.dirname(local_path)
         if not os.path.isdir(parent_dir):
             os.makedirs(parent_dir)
-        try:
-            print('Downloading', s3_key, 'to', local_path)
-            s3_client.download_file(config.s3_bucket_name, s3_key, local_path)
-        except Exception as e:
-            print('Downloading error:', s3_key)
-            print(e)
-            continue
+
+        pre_cache_path = os.path.join(S3_PREEXISTING_CACHE_PATH, s3_key)
+        if only_use_pre_cache:
+            try:
+                assert(os.path.isfile(pre_cache_path))
+            except AssertionError:
+                print('File {} is missing from expected pre-cache path'.format(s3_key))
+                raise
+        if os.path.isfile(pre_cache_path):
+            print('Using pre-cached version of file:', s3_key)
+            shutil.copy(pre_cache_path, local_path)
+        else:
+            try:
+                print('Downloading', s3_key, 'to', local_path)
+                s3_client.download_file(config.s3_bucket_name, s3_key, local_path)
+            except Exception as e:
+                print('Downloading error:', s3_key)
+                print(e)
+                continue
 
         sha_hash = get_file_hash_helper(local_path)
         if sha_hash in existing_hashes:
