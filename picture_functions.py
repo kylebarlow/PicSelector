@@ -882,7 +882,7 @@ def list_s3(sub_key, queue, existing_hashes, existing_keys, path_queue):
     non_thumb_s3_keys = set()
     for f in file_list:
         m = re.search(r'\d+w[_]\d+h', f)  # Thumbnails already created
-        if not m and f[-1] != '/' and '_ALTCODEC' not in f and '_MPDUMP' not in f:  # Also filter out directories and alt, non-original videos
+        if not m and f[-1] != '/' and '_ALTCODEC' not in f and '_MPDUMP' not in f and 'tacitpart' not in f:  # Also filter out directories and alt, non-original videos
             non_thumb_s3_keys.add(f)
 
     # existing_fnames_to_keys = {}
