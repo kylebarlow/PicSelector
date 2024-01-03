@@ -271,6 +271,9 @@ def get_days_df(year, month, favs_only=True):
         ),
     )
     df = adjust_utc_time_zone_to_local(df, add_year_month_day=False)
+    # Add timezone info to month DT objects
+    this_month_start = this_month_start.replace(tzinfo=LOCAL_TIME_ZONE)
+    next_month_start = next_month_start.replace(tzinfo=LOCAL_TIME_ZONE)
     # Filter on local time adjusted time range
     df = df.loc[(df['creation_time'] >= this_month_start) & (df['creation_time'] <= next_month_start)].copy()
     df['vote_matches_my_user_id'] = 0
