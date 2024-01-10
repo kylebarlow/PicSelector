@@ -6,6 +6,7 @@ services:
       dockerfile: flask.dockerfile
     volumes:
       - /tmp/pic_selector_local_s3_cache:/tmp/pic_selector_local_s3_cache
+      - /media/bespin/kyle/pictures:/tmp/local_s3_cache
     restart: always
     env_file:
       - .env
